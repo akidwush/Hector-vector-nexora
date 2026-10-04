@@ -50,18 +50,18 @@ The same editor runs on a phone. Not a viewer, not a cut-down "mobile version":
 | ![Earlier phone shell reference; the current portrait shell keeps the same contextual editing model while moving the permanent tool rails below the canvas](docs/editor-mobile.png) | ![The Panels sheet slid up, showing sideways tabs with the Object pane filling it](docs/editor-mobile-sheet.png) | ![Landscape phone: tools on a left rail, actions on a right rail, chrome and contextual buttons on one top row, canvas in the middle](docs/editor-mobile-landscape.png) |
 | Portrait keeps the canvas **full-width**. Primary and advanced tools are horizontal thumb docks below it; selection-only actions appear only when relevant. | The Panels sheet is a **tab strip**, not a stack. Pick one and it takes the whole sheet. | Sideways, the buttons **surround** the canvas, in the same language as the desktop. |
 
-## Cloudflare Pages deployment
+## Cloudflare deployment
 
-This fork is ready for Cloudflare Pages Git integration. Connect `akidwush/Hector-vector-nexora` and use:
+This fork is configured for **Cloudflare Workers Static Assets**, matching the current Cloudflare Git build flow. Connect `akidwush/Hector-vector-nexora` and use:
 
 - **Build command:** `bash scripts/build-cloud.sh`
-- **Build output directory:** `dist`
+- **Deploy command:** `npx wrangler deploy`
 - **Root directory:** repository root
 - **Production branch:** `main`
 
-The root Pages Function rewrites `/` to the vector editor, so both the generated `*.pages.dev` hostname and a custom domain open the editor directly. `wrangler.toml` uses the Pages project name `hector-vector-nexora`.
+The build writes the browser editor to `dist/index.html`, and `wrangler.toml` publishes `./dist` through Workers Static Assets. The root URL therefore opens the vector editor directly. Unknown browser-navigation routes fall back to `index.html`.
 
-For a manual deploy instead of Git integration, run `bash scripts/deploy-cloud.sh`.
+If you intentionally create a separate **Cloudflare Pages** project instead, use `npx wrangler pages deploy dist --project-name=<pages-project-name>` rather than `wrangler deploy`.
 
 ## Quick start
 
