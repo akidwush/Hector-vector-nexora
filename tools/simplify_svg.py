@@ -1,0 +1,337 @@
+"""Refit traced outlines to their minimal cubic-bezier representation.
+
+vtracer over-segments: a straight spike becomes dozens of tiny splines, a round
+letter dozens more. This collapses each subpath to the fewest anchors that still
+reproduce it within a tolerance — corners stay sharp (the path is split at sharp
+turns and each run fit independently), smooth runs become a few cubics.
+
+The tolerance is a FRACTION of the image size, so node count is resolution-stable:
+a 2000px and a 500px trace of the same logo simplify to the same handful of nodes.
+That is the cure for "node aliasing as resolution scales" — denser pixels no
+longer mean denser output.
+
+Pure numpy. Implements Philip J. Schneider's curve-fitting (Graphics Gems, 1990)
+with corner pre-splitting.
+"""
+from __future__ import annotations
+import math
+import re
+import numpy as np
+
+# ---------------------------------------------------------------- path parsing
+def _parse(d: str):
+    for m in re.finditer(r'([MLCZmlcz])([^MLCZmlcz]*)', d):
+        nums = [float(x) for x in re.findall(r'-?\d*\.?\d+(?:[eE]-?\d+)?', m.group(2))]
+        yield m.group(1), nums
+
+
+def _subpaths(d: str, samples: int = 12):
+    """Flatten a path's d to a list of closed polylines (Nx2 arrays)."""
+    subs, cur = [], []
+    px = py = 0.0
+    for cmd, n in _parse(d):
+        u = cmd.upper()
+        if u == "M":
+            if cur:
+                subs.append(cur)
+            px, py = n[0], n[1]
+            cur = [(px, py)]
+            for i in range(2, len(n), 2):
+                px, py = n[i], n[i + 1]
+                cur.append((px, py))
+        elif u == "L":
+            for i in range(0, len(n), 2):
+                px, py = n[i], n[i + 1]
+                cur.append((px, py))
+        elif u == "C":
+            # Vectorised cubic flattening: the per-sample Bernstein weights are constant,
+            # so precompute them once and evaluate each cubic with numpy (a path with tens
+            # of thousands of cubics — an upscaled-raster trace — used to flatten through a
+            # ~12×-per-command Python loop, which alone could take tens of seconds).
+            ts = np.linspace(0, 1, samples)[1:]
+            mt = 1 - ts
+            b0, b1, b2, b3 = mt**3, 3*mt**2*ts, 3*mt*ts*ts, ts**3
+            for i in range(0, len(n), 6):
+                x1, y1, x2, y2, x, y = n[i:i + 6]
+                xs = b0*px + b1*x1 + b2*x2 + b3*x
+                ys = b0*py + b1*y1 + b2*y2 + b3*y
+                cur.extend(zip(xs.tolist(), ys.tolist()))
+                px, py = x, y
+        elif u == "Z":
+            if cur:
+                subs.append(cur)
+                cur = []
+    if cur:
+        subs.append(cur)
+    out = []
+    for s in subs:
+        a = np.array(s, float)
+        # drop consecutive duplicates
+        if len(a) > 1:
+            keep = np.concatenate(([True], (np.abs(np.diff(a, axis=0)).sum(1) > 1e-6)))
+            a = a[keep]
+        if len(a) >= 3:
+            out.append(a)
+    return out
+
+
+# ---------------------------------------------------------------- Schneider fit
+def _bez(ctrl, t):
+    mt = 1 - t
+    return (mt**3*ctrl[0] + 3*mt**2*t*ctrl[1] + 3*mt*t*t*ctrl[2] + t**3*ctrl[3])
+
+
+def _cross2(a, b):
+    """2D scalar cross a×b = ax·by − ay·bx, broadcasting over leading axes. numpy's np.cross
+    routes 2D vectors through normalize_axis_tuple/moveaxis machinery that dominated the RDP
+    distance loop — this is the same number, ~free."""
+    return a[..., 0] * b[..., 1] - a[..., 1] * b[..., 0]
+
+
+def _bez_at(ctrl, u):
+    """Evaluate the cubic at every parameter in `u` at once → (n, 2). The Schneider fit
+    re-evaluates this on every iteration and at every recursion level, so the per-point
+    Python loop it replaces was the dominant cost on dense subpaths (many-path traces)."""
+    u = np.asarray(u, float)[:, None]
+    mt = 1 - u
+    return (mt**3) * ctrl[0] + (3*mt**2*u) * ctrl[1] + (3*mt*u*u) * ctrl[2] + (u**3) * ctrl[3]
+
+
+def _chord_param(P):
+    d = np.concatenate(([0.0], np.cumsum(np.hypot(*(np.diff(P, axis=0).T)))))
+    return d / d[-1] if d[-1] > 0 else np.linspace(0, 1, len(P))
+
+
+def _generate_bezier(P, u, t1, t2):
+    p0, pl = P[0], P[-1]
+    A0 = t1 * (3 * (1 - u)**2 * u)[:, None]
+    A1 = t2 * (3 * (1 - u) * u**2)[:, None]
+    B0 = (1 - u)**3; B1 = 3 * (1 - u)**2 * u; B2 = 3 * (1 - u) * u**2; B3 = u**3
+    fp = p0 * (B0 + B1)[:, None] + pl * (B2 + B3)[:, None]
+    res = P - fp
+    c00 = (A0 * A0).sum(); c01 = (A0 * A1).sum(); c11 = (A1 * A1).sum()
+    x0 = (A0 * res).sum(); x1 = (A1 * res).sum()
+    det = c00 * c11 - c01 * c01
+    chord = np.hypot(*(pl - p0))
+    if abs(det) < 1e-12:
+        a0 = a1 = chord / 3.0
+    else:
+        a0 = (x0 * c11 - x1 * c01) / det
+        a1 = (c00 * x1 - c01 * x0) / det
+    if a0 < 1e-6 or a1 < 1e-6:
+        a0 = a1 = chord / 3.0
+    return np.array([p0, p0 + t1 * a0, pl + t2 * a1, pl])
+
+
+def _max_error(P, ctrl, u):
+    pts = _bez_at(ctrl, u)
+    d2 = ((pts - P)**2).sum(1)
+    i = int(d2.argmax())
+    return math.sqrt(d2[i]), i
+
+
+def _reparam(P, ctrl, u):
+    # Newton step toward each point's true foot on the curve — vectorised over all u (was a
+    # per-point Python loop, run up to 4× per fit iteration). Identical formula per element.
+    u = np.asarray(u, float)
+    uu = u[:, None]; mt = 1 - uu
+    q  = (mt**3)*ctrl[0] + (3*mt**2*uu)*ctrl[1] + (3*mt*uu*uu)*ctrl[2] + (uu**3)*ctrl[3]
+    d1 = (3*mt**2)*(ctrl[1]-ctrl[0]) + (6*mt*uu)*(ctrl[2]-ctrl[1]) + (3*uu*uu)*(ctrl[3]-ctrl[2])
+    d2 = (6*mt)*(ctrl[2]-2*ctrl[1]+ctrl[0]) + (6*uu)*(ctrl[3]-2*ctrl[2]+ctrl[1])
+    diff = q - P
+    num = (diff * d1).sum(1)
+    den = (d1 * d1).sum(1) + (diff * d2).sum(1)
+    bad = np.abs(den) < 1e-12
+    out = u - num / np.where(bad, 1.0, den)
+    out[bad] = u[bad]
+    return np.clip(out, 0.0, 1.0)
+
+
+def _unit(v):
+    n = np.hypot(*v)
+    return v / n if n > 1e-9 else np.zeros(2)
+
+
+def _fit(P, t1, t2, tol, depth=0):
+    if len(P) == 2:
+        d = np.hypot(*(P[1] - P[0])) / 3.0
+        return [np.array([P[0], P[0] + t1 * d, P[1] + t2 * d, P[1]])]
+    u = _chord_param(P)
+    ctrl = _generate_bezier(P, u, t1, t2)
+    err, split = _max_error(P, ctrl, u)
+    if err < tol:
+        return [ctrl]
+    if err < tol * 4 and depth < 24:
+        for _ in range(4):
+            u = _reparam(P, ctrl, u)
+            ctrl = _generate_bezier(P, u, t1, t2)
+            err, split = _max_error(P, ctrl, u)
+            if err < tol:
+                return [ctrl]
+    if depth > 28 or split <= 0 or split >= len(P) - 1:
+        return [ctrl]
+    tc = _unit(P[split - 1] - P[split + 1])
+    left = _fit(P[:split + 1], t1, tc, tol, depth + 1)
+    right = _fit(P[split:], -tc, t2, tol, depth + 1)
+    return left + right
+
+
+# ---------------------------------------------------------------- decimate
+def _rdp_mask(P, eps):
+    """RDP keep-mask over an open polyline (iterative). True = keep."""
+    n = len(P)
+    keep = np.zeros(n, bool)
+    if n == 0:
+        return keep
+    keep[0] = keep[-1] = True
+    if n < 3:
+        return keep
+    stack = [(0, n - 1)]
+    while stack:
+        a, b = stack.pop()
+        if b <= a + 1:
+            continue
+        seg = P[a:b + 1]
+        d = seg[-1] - seg[0]; L = math.hypot(*d)
+        dist = (np.hypot(*((seg - seg[0]).T)) if L < 1e-9
+                else np.abs(_cross2(d / L, seg - seg[0])))
+        i = int(dist.argmax())
+        if dist[i] > eps:
+            keep[a + i] = True
+            stack.append((a, a + i)); stack.append((a + i, b))
+    return keep
+
+
+def _corner_flags(K, ang_deg):
+    """Which decimated vertices turn sharper than ang_deg (a real corner)."""
+    n = len(K); thr = math.cos(math.radians(ang_deg)); out = []
+    for i in range(n):
+        a = _unit(K[i] - K[(i - 1) % n])
+        b = _unit(K[(i + 1) % n] - K[i])
+        out.append(bool(a.any() and b.any() and float(a @ b) < thr))
+    return out
+
+
+def _dedup(run):
+    if len(run) < 2:
+        return run
+    keep = np.concatenate(([True], np.abs(np.diff(run, axis=0)).sum(1) > 1e-6))
+    return run[keep]
+
+
+def _fit_loop(P, tol, corner_ang, max_pts=6000):
+    """Locate corners on an RDP-decimated copy (so spike tips are crisp single
+    vertices), but fit cubics to the *dense* points in each run between corners —
+    accurate curves, minimal segments, response that tracks the tolerance."""
+    dense = np.vstack([P, P[0]])              # close the loop
+    if len(dense) > max_pts:
+        # Pathologically dense subpath — e.g. a huge connected region traced at high
+        # resolution (an upscaled raster → one boundary with tens of thousands of
+        # points). The iterative RDP below is ~O(n²) on a convoluted boundary, so such
+        # a subpath alone can wedge the refit for tens of seconds. Uniformly pre-decimate
+        # to a bound: at these feature-relative tolerances the result is visually
+        # identical, and normal subpaths (< max_pts) are never touched.
+        sel = np.unique(np.linspace(0, len(dense) - 1, max_pts).round().astype(int))
+        dense = dense[sel]
+    mask = _rdp_mask(dense, tol)
+    idx = np.nonzero(mask)[0]                  # dense indices kept by RDP
+    if len(idx) < 3:
+        return []
+    K = dense[idx]
+    if np.allclose(K[0], K[-1]):
+        K = K[:-1]; idx = idx[:-1]
+    flags = _corner_flags(K, corner_ang)
+    cuts = sorted(int(idx[i]) for i in range(len(idx)) if flags[i])
+    if not cuts:
+        # smooth closed loop: seam at the sharpest decimated vertex, fit dense once
+        si = min(range(len(K)), key=lambda i: float(_unit(K[i]-K[(i-1)%len(K)]) @ _unit(K[(i+1)%len(K)]-K[i])))
+        s = int(idx[si]); Q = _dedup(np.vstack([dense[s:], dense[1:s + 1]]))
+        return _fit(Q, _unit(Q[1]-Q[0]), _unit(Q[-2]-Q[-1]), tol) if len(Q) >= 2 else []
+    segs = []
+    for j in range(len(cuts)):
+        a, b = cuts[j], cuts[(j + 1) % len(cuts)]
+        run = dense[a:b + 1] if b > a else np.vstack([dense[a:], dense[:b + 1]])
+        run = _dedup(run)
+        if len(run) < 2:
+            continue
+        segs += _fit(run, _unit(run[1]-run[0]), _unit(run[-2]-run[-1]), tol)
+    return segs
+
+
+# ---------------------------------------------------------------- emit
+def _fmt(v, prec):
+    s = f"{v:.{prec}f}".rstrip("0").rstrip(".")
+    return s if s not in ("", "-0") else "0"
+
+
+def _emit(segs, prec):
+    if not segs:
+        return ""
+    p = lambda xy: f"{_fmt(xy[0], prec)},{_fmt(xy[1], prec)}"
+    out = [f"M{p(segs[0][0])}"]
+    for s in segs:
+        # collapse a near-straight cubic to a line (controls on the chord)
+        chord = s[3] - s[0]; cl = np.hypot(*chord)
+        if cl > 1e-6:
+            cdir = chord / cl
+            dev = max(abs(_cross2(cdir, s[1]-s[0])), abs(_cross2(cdir, s[2]-s[0])))
+        else:
+            dev = 1.0
+        if dev < 0.25:
+            out.append(f"L{p(s[3])}")
+        else:
+            out.append(f"C{p(s[1])} {p(s[2])} {p(s[3])}")
+    out.append("Z")
+    return "".join(out)
+
+
+def simplify_d(d: str, frac: float, corner_ang: float = 42.0, prec: int = 1, floor: float = 0.75):
+    """Simplify one path. Tolerance is per-SUBPATH and feature-relative — a fraction
+    of that subpath's own size — so a tiny letter and a giant spike are each reduced
+    in proportion to themselves, never by one global pixel budget."""
+    segs_count = 0
+    pieces = []
+    for P in _subpaths(d):
+        lo = P.min(0); hi = P.max(0)
+        tol = max(floor, frac * float(max(hi[0] - lo[0], hi[1] - lo[1])))
+        segs = _fit_loop(P, tol, corner_ang)
+        if segs:
+            pieces.append(_emit(segs, prec))
+            segs_count += len(segs)
+    return " ".join(pieces), segs_count
+
+
+# The parser (_parse/_subpaths) only understands ABSOLUTE M/L/C/Z. Relative
+# m/l/c would be silently treated as absolute (geometry destroyed), and
+# H/V/S/Q/T/A are dropped with their numbers glued onto the previous command.
+# A path containing any of these must be left untouched, not mangled. (vtracer /
+# clean_color_trace emit absolute MLCZ, so the normal pipeline is unaffected;
+# this guards editor-authored or foreign SVGs that reach simplification.)
+_UNSUPPORTED_CMD = re.compile(r'[HVSQTAhvsqtamlc]')
+# Only rewrite d= on <path> elements — never clipPath/marker/defs geometry, and
+# never a d= attribute on some other element. Captures the quote so single-quoted
+# attributes round-trip correctly.
+_PATH_D = re.compile(r'(<path\b[^>]*?\bd=)(["\'])(.*?)\2', re.IGNORECASE | re.DOTALL)
+
+
+# ---------------------------------------------------------------- whole SVG
+def simplify_svg_text(text: str, frac: float = 0.02, corner_ang: float = 42.0):
+    """Refit every <path> in an SVG. Tolerance is feature-relative (per subpath),
+    so node count is stable across resolutions and small features keep their shape
+    while large ones collapse to their minimal anchors."""
+    before = after = 0
+    skipped = 0
+
+    def repl(m):
+        nonlocal before, after, skipped
+        prefix, quote, d = m.group(1), m.group(2), m.group(3)
+        if _UNSUPPORTED_CMD.search(d):
+            skipped += 1
+            return m.group(0)   # relative/unsupported commands → leave the path exactly as-is
+        before += len(re.findall(r'[MLCZ]', d))
+        nd, segs = simplify_d(d, frac, corner_ang)
+        after += segs
+        return f'{prefix}{quote}{nd}{quote}' if nd else m.group(0)
+
+    new = _PATH_D.sub(repl, text)
+    return new, {"nodes_before": before, "nodes_after": after, "frac": frac, "skipped": skipped}

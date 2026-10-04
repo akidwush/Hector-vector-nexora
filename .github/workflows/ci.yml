@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime deps
+        run: pip install -r requirements.txt
+
+      - name: Check frontend ES modules parse
+        run: |
+          set -e
+          for f in $(find src -name '*.js'); do
+            cp "$f" "$f.mjs" && node --check "$f.mjs" && rm "$f.mjs"
+          done
+
+      # JS twin of the Python import guard: no-undef catches an identifier used but neither
+      # imported, declared, nor a browser global — the missing-import ReferenceError class the
+      # app.js/editor.js splits keep introducing (docks.js's showContextMenu + cycleBg). node
+      # --check (above) only checks syntax. Pinned eslint via npx keeps the repo build-free
+      # (no package.json / node_modules). ESLINT_USE_FLAT_CONFIG=false → use the legacy -c config.
+      - name: JS undefined-name guard (no-undef across src/)
+        run: ESLINT_USE_FLAT_CONFIG=false npx --yes eslint@8.57.1 --no-eslintrc -c tests/eslintrc.json --ext .js src/
+
+      - name: Check Python sources parse
+        run: |
+          python3 - <<'PY'
+          import ast, glob
+          # Glob the server-side sources (root + the hvserver/ package + tools/) rather than
+          # a hardcoded list, so deletions (mask_trace_prep, #17) and the server split (#29)
+          # can't silently break this step again.
+          files = sorted(set(glob.glob("*.py") + glob.glob("hvserver/*.py") + glob.glob("tools/*.py")))
+          for f in files:
+              ast.parse(open(f).read()); print(f, "OK")
+          PY
+
+      - name: Import guard (no undefined module globals after a split)
+        run: python3 tests/test_imports.py
+
+      # Third build-free static gate. A `var(--paper, #fafafa)` whose token is never declared renders
+      # its fallback forever, in silence, and no theme can move it — seven tokens were in that state.
+      - name: CSS token guard (no ghost tokens, no colour fallbacks)
+        run: python3 tests/test_css_tokens.py
+
+      - name: Smoke tests (parse + pixelvec + render)
+        run: python3 tests/test_smoke.py
+
+      - name: Capability + analyzer/router suite
+        run: python3 tests/test_capabilities.py
+
+      # Text → outlines deps + logic (network-free). Guards the fonttools[woff]/Brotli packaging
+      # fix (woff2 decode), the system-font substitution map + complex-script guardrail, and the
+      # font endpoint contract. The full browser e2e (editor_e2e.py "Text:") stays a local gate.
+      - name: Text feature guard (deps + shaping logic)
+        run: python3 tests/test_text.py

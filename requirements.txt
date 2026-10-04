@@ -1,0 +1,23 @@
+# Core runtime — required for the server to start (engine.py uses scipy.ndimage).
+Pillow>=10.0
+numpy>=1.24
+scipy>=1.10
+# Text → outlines (the Text tool's "Convert to outlines"): shapes + traces glyph contours.
+# The [woff] extra pulls in Brotli, needed to DECODE the cached .woff2 fonts.
+fonttools[woff]>=4.40
+
+# Optional — installed on demand from Settings → AI models & tools (or up front with
+# `./install.sh --ai`) into ./.venv; not required to start:
+#   rembg[cpu] onnxruntime   # AI background removal (Cutout "AI" backend)
+#   cairosvg                 # rasterize curved (vtracer) SVGs in Export PNG; needs system libcairo
+#   uharfbuzz                # browser-exact text shaping for Text → outlines (Arabic/Indic/RTL/
+#                            # marks). Without it the server falls back to Latin-grade GPOS/kern
+#                            # + GSUB ligatures and warns on complex scripts.
+#   mcp playwright           # hvserver/mcp_server.py — agent/human parity (docs/mcp-server.md).
+#                            # playwright is only used to ATTACH over CDP to an already-running
+#                            # tab (connect_over_cdp), never to launch a browser of its own, so
+#                            # the `playwright install` browser download is unnecessary here.
+#
+# External tools auto-install on first run (no pip needed):
+#   Real-ESRGAN NCNN Vulkan  -> downloaded from GitHub releases into ./tools
+#   VTracer                  -> built via `cargo install vtracer` into ./tools/cargo

@@ -1,0 +1,86 @@
+<!doctype html>
+<!--
+  LNA SPIKE — verifies the ONE assumption the cloud→companion bridge rests on:
+  can a PUBLIC https origin reach the local companion via Chrome's Local Network Access?
+
+  HOW TO RUN (needs a real, headed Chrome — the wall only engages public-origin → localhost):
+    1. Start the companion (the normal server, companion mode on, origin = where you'll serve THIS page):
+         HV_COMPANION=1 HV_COMPANION_ORIGIN=https://<where-this-page-is-served> PORT=2002 ./run.sh
+       (HV_COMPANION_ORIGIN must EXACTLY match this page's origin — scheme + host, no path.)
+    2. This file is already bundled+deployed by deploy-cloud.sh — open https://hector-vector.com/companion-spike
+       directly (no tunnel needed; localhost→localhost never triggers LNA, but this is already a real public origin).
+    3. Set the port below (2002), click Connect.
+       Chrome should show: "…wants to look for and connect to any device on your local network."
+    4. Click Allow. You should see the companion's JSON.
+    5. THE ONE THING LEFT TO CONFIRM BY HAND (needs a real profile + a real click — not automatable):
+       PERSISTENCE — reload the page and click Connect again. Prompt again, or silent? (silent = remembered
+       per-origin = one-time). Report back.
+
+  ALREADY ANSWERED, 2026-07-19, via Playwright driving the real chain (browser → this exact live page →
+  a locally-run companion, CDP-granted local-network-access, real fetch, real 200) — see decision log:
+    - HEADERS: confirmed sufficient as-is. The existing CORS + PNA preflight (Access-Control-Allow-
+      Private-Network: true on the OPTIONS response) is everything Chrome asks for; nothing more needed.
+    - REAL BUG FOUND + FIXED: this file used targetAddressSpace:"local" below, but 127.0.0.1 is its own
+      "loopback" address-space category in the PNA spec, distinct from "local" (private-LAN ranges).
+      Declaring the wrong one doesn't fall through to a permission prompt — Chrome hard-fails the fetch
+      with an address-space MISMATCH error first. As originally written, this spike could never have
+      reached a real permission prompt on ANY device. Fixed to "loopback"; verified end-to-end afterward.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>hector-vector — LNA companion spike</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #222; }
+    h1 { font-size: 18px; } code { background: #f2f2f2; padding: 1px 5px; border-radius: 4px; }
+    .row { display: flex; gap: 8px; align-items: center; margin: 14px 0; }
+    input { font: inherit; padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; }
+    button { font: inherit; font-weight: 600; padding: 8px 16px; border: 1px solid #333; border-radius: 6px; background: #fff; cursor: pointer; }
+    button:hover { background: #f6f6f6; }
+    pre { background: #111; color: #d6ffd6; padding: 12px; border-radius: 8px; overflow: auto; white-space: pre-wrap; }
+    .muted { color: #777; } .ok { color: #187a18; } .err { color: #b00020; }
+  </style>
+</head>
+<body>
+  <h1>LNA companion spike</h1>
+  <p class="muted">This page's origin: <code id="origin"></code> — the companion must be started with
+    <code>HV_COMPANION_ORIGIN</code> set to exactly this.</p>
+  <div class="row">
+    <label>Companion port <input id="port" value="2002" size="6" /></label>
+    <button id="connect">Connect to local companion</button>
+  </div>
+  <p id="status" class="muted">Idle. (Serve this from a public https origin in Chrome/Edge, then click Connect.)</p>
+  <pre id="out" hidden></pre>
+  <script>
+    document.getElementById("origin").textContent = location.origin;
+    const $ = (id) => document.getElementById(id);
+    const status = (msg, cls) => { const s = $("status"); s.textContent = msg; s.className = cls || "muted"; };
+    const show = (obj) => { const o = $("out"); o.hidden = false; o.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2); };
+    $("connect").addEventListener("click", async () => {
+      const port = ($("port").value || "2002").trim();
+      const url = `http://127.0.0.1:${port}/companion/ping`;
+      status("Requesting local network access…", "muted");
+      const t0 = performance.now();
+      try {
+        // targetAddressSpace:"loopback", NOT "local" — 127.0.0.1 is its own PNA address-space
+        // category, distinct from "local" (private-LAN ranges like 192.168.x.x or .local mDNS
+        // hosts). Declaring "local" against a loopback target doesn't fall through to a
+        // permission prompt at all; Chrome hard-fails the fetch with an address-space MISMATCH
+        // error before permission is ever considered ("Request had a target IP address space of
+        // `local` yet the resource is in address space `loopback`") — confirmed empirically by
+        // driving this exact fetch through Playwright and reading the real console error.
+        const res = await fetch(url, { targetAddressSpace: "loopback" });
+        const dt = Math.round(performance.now() - t0);
+        if (!res.ok) { status(`Reached it but got HTTP ${res.status}.`, "err"); return; }
+        const data = await res.json();
+        status(`✅ Connected in ${dt}ms. Now RELOAD + click again — was there a second permission prompt? (that's the persistence answer)`, "ok");
+        show(data);
+      } catch (e) {
+        status(`❌ Blocked/failed: ${e.name}: ${e.message}. If no permission prompt appeared, LNA didn't engage — check you're on a PUBLIC origin (not localhost) in Chrome 142+, and the companion's HV_COMPANION_ORIGIN matches ${location.origin}.`, "err");
+        show(String(e));
+      }
+    });
+  </script>
+</body>
+</html>
