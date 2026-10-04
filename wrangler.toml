@@ -1,2 +1,11 @@
 name = "hector-vector-nexora"
-pages_build_output_dir = "./dist"
+compatibility_date = "2026-10-05"
+
+# Cloudflare Workers Static Assets.
+# The dashboard deployment in this project runs `npx wrangler deploy`, so
+# Wrangler needs an assets directory instead of a Pages-only
+# `pages_build_output_dir`.
+[assets]
+directory = "./dist"
+html_handling = "auto-trailing-slash"
+not_found_handling = "single-page-application"
