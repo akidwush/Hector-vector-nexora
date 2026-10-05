@@ -11,6 +11,47 @@ import { setStatus } from "../../app.js";
 import { snapPoint, snap45 } from "../snap.js";
 
 export const penMixin = {
+  _penPointState() {
+    if (!this._pen) return null;
+    const copyHandle = (h) => h ? { x: h.x, y: h.y } : null;
+    return {
+      closed: !!this._pen.closed,
+      pts: this._pen.pts.map((p) => ({ x: p.x, y: p.y, in: copyHandle(p.in), out: copyHandle(p.out) })),
+    };
+  },
+  _recordPenPoint() {
+    if (!this._pen) return;
+    this._pen.pointUndo.push(this._penPointState());
+    this._pen.pointRedo = [];
+  },
+  _applyPenPointState(state) {
+    if (!this._pen || !state) return;
+    this._pen.pts = state.pts;
+    this._pen.closed = !!state.closed;
+    this._pen.dragging = false;
+    this._redrawPen();
+    this._renderPenMarks();
+    this._setPenCloseCursor(false);
+    this._updateButtons();
+  },
+  // While construction is live, Undo/Redo belongs to the draft, not the whole
+  // document.  Keep the Pen active and move exactly one placed anchor at a time.
+  _undoPenPoint() {
+    if (!this._pen) return false;
+    if (!this._pen.pointUndo.length) return true;
+    this._pen.pointRedo.push(this._penPointState());
+    this._applyPenPointState(this._pen.pointUndo.pop());
+    setStatus("Removed the last Pen point.", 1000);
+    return true;
+  },
+  _redoPenPoint() {
+    if (!this._pen) return false;
+    if (!this._pen.pointRedo.length) return true;
+    this._pen.pointUndo.push(this._penPointState());
+    this._applyPenPointState(this._pen.pointRedo.pop());
+    setStatus("Restored the Pen point.", 1000);
+    return true;
+  },
   _penDown(e) {
     if (e.button !== 0) return;
     if (this._penTempSelect) return;   // Ctrl/Cmd held → Direct-Select mode owns the canvas (handle drags only)
@@ -37,9 +78,10 @@ export const penMixin = {
       node.setAttribute("stroke", "#1d1d1f"); node.setAttribute("stroke-width", "1.5");
       node.setAttribute("vector-effect", "non-scaling-stroke");
       this._artHome().insertBefore(node, this._artBefore());   // into the isolation when isolated (Epic I)
-      this._pen = { node, pts: [], closed: false, dragging: false };
+      this._pen = { node, pts: [], closed: false, dragging: false, pointUndo: [], pointRedo: [] };
       this._penHoverBound = (ev) => this._penHover(ev);
       window.addEventListener("pointermove", this._penHoverBound);
+      this._recordPenPoint();
       anchor = { x: pt.x, y: pt.y, in: null, out: null };
       this._pen.pts.push(anchor);
     } else if (this._pen.pts.length >= 2 && this._penNearFirst(pt)) {
@@ -50,6 +92,7 @@ export const penMixin = {
       anchor = this._pen.pts[0];
       pt = { x: anchor.x, y: anchor.y };          // snap the close point exactly onto the first anchor
     } else {
+      this._recordPenPoint();
       if (e.shiftKey && this._pen.pts.length) {
         const prev = this._pen.pts[this._pen.pts.length - 1];   // Shift = 45°-constrained segment
         pt = snapPoint(prev.x, prev.y, pt.x, pt.y);
@@ -80,6 +123,7 @@ export const penMixin = {
       window.removeEventListener("pointerup", up);
       if (this._pen) this._pen.dragging = false;
       if (closing) this._finishPen(true);          // close completes on release, after any tangent drag
+      else this._updateButtons();
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -178,7 +222,7 @@ export const penMixin = {
     let pts = pa.anchors.map((a) => ({ x: a.x, y: a.y, in: a.in, out: a.out }));
     if (k === 0) pts = pts.reverse().map((a) => ({ x: a.x, y: a.y, in: a.out, out: a.in }));   // flip direction
     this.selection = new Set(); this.artboardSelected = false; this._renderSelection();
-    this._pen = { node: el, pts, closed: false, dragging: false, continued: true };
+    this._pen = { node: el, pts, closed: false, dragging: false, continued: true, pointUndo: [], pointRedo: [] };
     this._penHoverBound = (ev) => this._penHover(ev);
     window.addEventListener("pointermove", this._penHoverBound);
     this._redrawPen(); this._renderPenMarks();

@@ -91,4 +91,38 @@ viewportWindow.innerWidth = 900; viewportWindow.innerHeight = 430;
 const oldScale = vp.scale, oldX = vp.x;
 frame = { left: 0, top: 0, width: 900, height: 430 }; observer.cb();
 assert.equal(vp.scale, oldScale); assert.equal(vp.x, oldX);
-console.log('Mobile viewport and handle behavior: PASS');
+
+// Pen construction owns Undo/Redo point-by-point without finishing the live path.
+const pen = new Function('setStatus', noImports(source('src/editor/tools/pen.js')) + '\nreturn penMixin;')(() => {});
+const pedit = {
+  ...pen,
+  _pen: { pts: [], closed: false, dragging: false, pointUndo: [], pointRedo: [] },
+  redraws: 0,
+  _redrawPen() { this.redraws++; }, _renderPenMarks() {}, _setPenCloseCursor() {}, _updateButtons() {},
+};
+const point = (x) => ({ x, y: x, in: null, out: null });
+pedit._recordPenPoint(); pedit._pen.pts.push(point(1));
+pedit._recordPenPoint(); pedit._pen.pts.push(point(2));
+pedit._recordPenPoint(); pedit._pen.pts.push(point(3));
+const liveDraft = pedit._pen;
+assert.equal(pedit._undoPenPoint(), true);
+assert.equal(pedit._pen, liveDraft, 'undo must keep the Pen construction active');
+assert.deepEqual(pedit._pen.pts.map((p) => p.x), [1, 2], 'undo removes exactly one point');
+assert.equal(pedit._redoPenPoint(), true);
+assert.deepEqual(pedit._pen.pts.map((p) => p.x), [1, 2, 3], 'redo restores exactly one point');
+pedit._undoPenPoint(); pedit._recordPenPoint(); pedit._pen.pts.push(point(4));
+assert.equal(pedit._pen.pointRedo.length, 0, 'a new point clears only the draft redo branch');
+
+// Large recovery payloads are IndexedDB-backed and event-driven.  Keep the cloud/mobile
+// picker wired to the existing raster-to-canvas path instead of the desktop upload API.
+const recoverySource = source('src/ui/recovery.js');
+const appSource = source('src/app.js');
+const htmlSource = source('web/app.html');
+assert.match(recoverySource, /indexedDB\.open\(/);
+assert.doesNotMatch(recoverySource, /localStorage\s*\.\s*(?:get|set|remove|clear)|setTimeout\s*\(/);
+assert.match(recoverySource, /new MutationObserver/);
+assert.match(appSource, /isReloadNavigation\(\).*restoreRecoveryDraft/s);
+assert.match(appSource, /for \(const file of valid\).*loadFileToCanvas/s);
+assert.match(htmlSource, /id="reference-file-input"[^>]+image\/png[^>]+image\/jpeg/);
+
+console.log('Mobile viewport, Pen history, raster import, and recovery behavior: PASS');

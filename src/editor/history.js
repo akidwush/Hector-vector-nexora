@@ -63,12 +63,14 @@ export const historyMixin = {
   cancelCoalesce() { this._coalescing = false; this._coalesceState = null; },
   _state() { return { svg: this._historyMarkup(), sel: [...this.selection], ab: this.artboardSelected, abi: this._abSel, label: this._curLabel || "Edit" }; },
   undo() {
-    if (this._pen) this._finishPen(true); if (this._curv) this._curvFinish(true); this.commitCoalesce();
+    if (this._pen && this._undoPenPoint()) return;
+    if (this._curv) this._curvFinish(true); this.commitCoalesce();
     if (!this.history.length) return;
     this.redo.push(this._state()); const s = this.history.pop(); this._curLabel = s.label; this._restore(s); this._renderHistory();
   },
   redoAction() {
-    if (this._pen) this._finishPen(true); if (this._curv) this._curvFinish(true); this.commitCoalesce();
+    if (this._pen && this._redoPenPoint()) return;
+    if (this._curv) this._curvFinish(true); this.commitCoalesce();
     if (!this.redo.length) return;
     this.history.push(this._state()); const s = this.redo.pop(); this._curLabel = s.label; this._restore(s); this._renderHistory();
   },
@@ -122,7 +124,9 @@ export const historyMixin = {
   },
   _updateButtons() {
     const u = document.querySelector("#undo-button"), r = document.querySelector("#redo-button");
-    if (u) u.disabled = !this.history.length;
-    if (r) r.disabled = !this.redo.length;
+    const penUndo = !!(this._pen && this._pen.pointUndo && this._pen.pointUndo.length);
+    const penRedo = !!(this._pen && this._pen.pointRedo && this._pen.pointRedo.length);
+    if (u) u.disabled = this._pen ? !penUndo : !this.history.length;
+    if (r) r.disabled = this._pen ? !penRedo : !this.redo.length;
   },
 };
