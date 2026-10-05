@@ -97,6 +97,9 @@ import {
 } from "./ui/info.js";
 import { configureLibrary, renderLibrary, libraryMode } from "./ui/library.js";
 import { installIconSystem } from "./ui/icon-system.js";
+import {
+  configureRecovery, loadRecovery, isReloadNavigation, saveRecoveryNow,
+} from "./ui/recovery.js";
 
 // Replace font-dependent toolbar runes with a consistent local outline icon system.
 installIconSystem();
@@ -123,6 +126,7 @@ try {
 } catch {}
 
 const fileInputEl = document.querySelector("#file-input");
+const referenceInputEl = document.querySelector("#reference-file-input");
 const outputPreviewEl = document.querySelector("#output-preview");
 const statusTextEl = document.querySelector("#status-text");
 const paletteButtonEl = document.querySelector("#palette-button");
@@ -133,6 +137,29 @@ const modalBodyEl = document.querySelector("#modal-body");
 const modalSearchEl = document.querySelector("#modal-search");
 const appShellEl = document.querySelector(".app.editor");
 const shortcutButtonEl = document.querySelector("#shortcut-button");
+
+// Keep the entire working document (including embedded reference rasters and undo
+// snapshots) in IndexedDB.  localStorage remains reserved for tiny preferences and
+// descriptors; it is both too small and synchronous for project payloads.
+configureRecovery({
+  root: outputPreviewEl,
+  capture: () => {
+    if (!editor.stage) return null;
+    const cloneState = (s) => ({ ...s, sel: Array.isArray(s.sel) ? [...s.sel] : [] });
+    return {
+      version: 1,
+      savedAt: Date.now(),
+      name: viewports.output.name || "recovered.svg",
+      svg: editor._historyMarkup ? editor._historyMarkup() : editor.stage.outerHTML,
+      history: (editor.history || []).map(cloneState),
+      redo: (editor.redo || []).map(cloneState),
+      selection: [...editor.selection],
+      artboardSelected: !!editor.artboardSelected,
+      artboardIndex: editor._abSel,
+      currentLabel: editor._curLabel || "Edit",
+    };
+  },
+});
 
 const SETTINGS_DEFAULTS = {
   model: "realesrgan-x4plus",
@@ -520,6 +547,7 @@ const MENU_ITEMS = {
       { type: "sep" },
       { label: "Open (.svg, .pdf, .ai)…", onClick: openFromFile },
       { label: "Open project (.hv)…", onClick: openProjectFromFile },
+      { label: "Place reference image (PNG/JPEG)…", onClick: openReferenceImagePicker },
       { type: "sep" },
       { label: "Download (.svg)", onClick: downloadCurrentSvg },
       { label: "Save project (.hv, with undo history)…", onClick: downloadProject },
@@ -542,6 +570,7 @@ const MENU_ITEMS = {
       { label: "Open from file…", onClick: openFromFile },
       { label: "Open project (.hv)…", onClick: openOpenProjectModal },
       { label: "Place into canvas…", onClick: openPlaceModal },
+      { label: "Place reference image (PNG/JPEG)…", onClick: openReferenceImagePicker },
       { type: "sep" },
       // Mirrors Settings ▸ On launch (prefs.startup) — surfaced here too since "will my
       // work still be here next time" is a File-menu question, not just a Settings one.
@@ -1703,7 +1732,13 @@ document.addEventListener("pointerdown", (e) => {
 }, true);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideContextMenu(); });   // panels are permanent; Esc only dismisses the transient menu/picker
 window.addEventListener("blur", hideContextMenu);
-window.addEventListener("pagehide", () => { rememberLastDoc(); editor.dispose(); });   // remember the doc, then free its state on close
+window.addEventListener("pagehide", () => {
+  rememberLastDoc();
+  // Capture synchronously before dispose removes an unfinished Pen path and clears
+  // history.  IndexedDB receives the already-cloned payload asynchronously.
+  saveRecoveryNow();
+  editor.dispose();
+});
 // Pen tool: hold Ctrl/Cmd to temporarily act as Direct-Select (move anchors/handles).
 document.addEventListener("keydown", (e) => { if ((e.key === "Control" || e.key === "Meta") && editor.tool === "pen") editor.enterPenTempSelect(); });
 document.addEventListener("keyup", (e) => { if (e.key === "Control" || e.key === "Meta") editor.exitPenTempSelect(); });
@@ -1921,12 +1956,39 @@ window.__geom = {
   outlineStroke: (shapes, strokeWidths) => _geomScratch(shapes, strokeWidths || shapes.map(() => 4)).then(() => { editor.outlineStroke(); return _geomResults(); }),
 };
 
+function openReferenceImagePicker() {
+  if (!referenceInputEl) return;
+  referenceInputEl.value = "";
+  referenceInputEl.click();
+}
+
+referenceInputEl?.addEventListener("change", async () => {
+  const files = [...(referenceInputEl.files || [])];
+  if (!files.length) return;
+  const valid = files.filter(isRasterFile);
+  if (!valid.length) { setStatus("Choose a PNG or JPEG reference image.", 3000); return; }
+  let placed = 0;
+  for (const file of valid) if (await loadFileToCanvas(file)) placed++;
+  if (placed) setStatus(`Placed ${placed} reference image${placed === 1 ? "" : "s"} on the canvas.`, 2500);
+  referenceInputEl.value = "";
+});
+
 fileInputEl.addEventListener("change", async () => {
   const count = fileInputEl.files.length;
   if (!count) return;
   try {
-    setStatus(`Uploading ${count} file(s)…`);
-    await uploadFiles(fileInputEl.files);
+    if (CLOUD) {
+      // The cloud editor has no upload backend.  On mobile this picker is the
+      // practical tracing-reference path (OS drag/drop is unavailable), so place
+      // the selected rasters directly into the live SVG instead of calling api().
+      let placed = 0;
+      for (const file of [...fileInputEl.files].filter(isRasterFile)) if (await loadFileToCanvas(file)) placed++;
+      if (!placed) throw new Error("Choose an image to place on the canvas.");
+      setStatus(`Placed ${placed} reference image${placed === 1 ? "" : "s"} on the canvas.`, 2500);
+    } else {
+      setStatus(`Uploading ${count} file(s)…`);
+      await uploadFiles(fileInputEl.files);
+    }
   } catch (error) {
     setStatus(error.message, 4000);
   } finally {
@@ -1934,7 +1996,10 @@ fileInputEl.addEventListener("change", async () => {
   }
 });
 // ⊕ in the Library dock panel header → same add-images gesture as the Process view.
-document.querySelector("#library-add")?.addEventListener("click", (e) => { e.stopPropagation(); fileInputEl.click(); });
+document.querySelector("#library-add")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (CLOUD) openReferenceImagePicker(); else fileInputEl.click();
+});
 // Jobs header actions (square tool-buttons): cancel all queued / clear finished.
 document.querySelector("#jobs-cancel-all")?.addEventListener("click", (e) => { e.stopPropagation(); cancelAllQueuedJobs(); });
 document.querySelector("#jobs-clear")?.addEventListener("click", (e) => { e.stopPropagation(); clearFinishedJobs(); });
@@ -3017,9 +3082,31 @@ if (!CLOUD) ensureAgentAccessInfo();   // warm the cache so the File menu's stat
 //
 // So: mint the document first, unconditionally, and let the tool inventory turn up whenever it turns
 // up. Open the page, get a canvas, start drawing.
+async function restoreRecoveryDraft() {
+  const draft = await loadRecovery();
+  if (!draft || draft.version !== 1 || typeof draft.svg !== "string" || !/<svg[\s>]/i.test(draft.svg)) return false;
+  mountStageFromText(draft.svg, draft.name || "recovered.svg");
+  const validStates = (items) => (Array.isArray(items) ? items : []).filter((s) => s && typeof s.svg === "string");
+  editor.history = validStates(draft.history);
+  editor.redo = validStates(draft.redo);
+  editor._curLabel = draft.currentLabel || "Recovered";
+  editor.selection = new Set((Array.isArray(draft.selection) ? draft.selection : []).filter((id) => editor.nodeById(id)));
+  editor.artboardSelected = !!draft.artboardSelected;
+  editor._abSel = (draft.artboardIndex != null && editor.artboards?.[draft.artboardIndex]) ? draft.artboardIndex : null;
+  editor._renderSelection();
+  editor._renderInspector();
+  editor._renderHistory();
+  editor._updateButtons();
+  setStatus("Recovered your canvas after refresh.", 3000);
+  return true;
+}
+
 (async () => {
   try {
-    // Resume the last document only if the user asked for that AND there is one to restore.
+    // A refresh always restores the live local draft, regardless of the cold-start
+    // preference.  A normal launch restores it only when the user chose Resume.
+    if ((isReloadNavigation() || prefs.startup === "resume") && (await restoreRecoveryDraft())) return;
+    // Server-backed descriptors remain a fallback for older sessions and desktop files.
     if (prefs.startup === "resume" && (await resumeLastDoc())) return;
   } catch { /* nothing to resume, or no server to resume it from — a blank canvas is the right answer */ }
   mountBlankCanvas();
