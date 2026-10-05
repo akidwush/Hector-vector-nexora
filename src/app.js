@@ -84,7 +84,7 @@ import {
 import {
   configureViewport, viewports, cycleBg, measureFit, drawRulers,
   applyViewportState, mountViewport, clearViewport, bindRulerGuides,
-  zoomVp, fitVp, actualVp, frameRect, bindViewportDragging, bindViewportZoom, bindViewportTouch,
+  zoomVp, fitVp, actualVp, frameRect, bindViewportDragging, bindViewportZoom, bindViewportTouch, observeViewportFrame,
 } from "./ui/viewport.js";
 import { initTouchDebug, setTouchDebugVisual } from "./ui/touchdebug.js";
 import {
@@ -408,6 +408,7 @@ function stem_(n) { return n.replace(/\.[^.]+$/, ""); }
 Object.values(viewports).forEach(bindViewportDragging);
 Object.values(viewports).forEach(bindViewportZoom);
 Object.values(viewports).forEach(bindViewportTouch);
+Object.values(viewports).forEach(observeViewportFrame);
 initTouchDebug();   // always-on recorder (cheap); ?touchdebug or a persisted pref switches the visual overlay on
 if (prefs.touchDebug) setTouchDebugVisual(true);
 
@@ -588,6 +589,7 @@ configureExport({
 
 // ---------- editor wiring: tools, header buttons, rail, keyboard ----------
 document.querySelectorAll(".tool-button").forEach((b) => b.addEventListener("click", () => editor.setTool(b.dataset.tool)));
+document.querySelector('#node-handle-link')?.addEventListener('click', () => editor.toggleNodeHandleLink());
 // ---------- fill (primary) / stroke (secondary) colour swatches ----------
 {
   const fillSw = document.querySelector("#swatch-fill");

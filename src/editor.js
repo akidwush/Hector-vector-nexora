@@ -169,7 +169,7 @@ const editor = {
     this._pen = null;
     this._curv = null;
     this.selection = new Set();
-    this._nodeSel = new Set();
+    this._nodeSel = new Set(); this._handleLink = null;
     this.artboardSelected = false;
     this.history = [];
     this.redo = [];
@@ -200,7 +200,7 @@ const editor = {
     this.cancelCoalesce();
     const ov = this._overlayEl(); if (ov) ov.innerHTML = "";
     this.selection = new Set();
-    this._nodeSel = new Set();
+    this._nodeSel = new Set(); this._handleLink = null;
     this.artboardSelected = false;
     this.history = [];
     this.redo = [];
@@ -622,7 +622,7 @@ const editor = {
     if (this._textEdit && t !== "text") this._commitText();   // leaving the text tool finishes the edit in progress
     if (this._blendPick && t !== "blend") this._blendPick = null;   // drop a half-made blend pick on tool switch
     if (t !== this.tool) { this._xformMode = null; this._gradMode = false; }   // leaving select drops the transform / gradient sub-mode
-    if (t !== "node") this._nodeSel = new Set();           // anchor selection is node-tool-only
+    if (t !== "node") { this._nodeSel = new Set(); this._handleLink = null; } // contextual anchor state
     this.tool = t;
     document.querySelectorAll(".tool-button").forEach((b) => b.classList.toggle("active", b.dataset.tool === t));
     const wrap = document.querySelector(".stage-wrap");
@@ -635,6 +635,7 @@ const editor = {
       this._penHit = null; this._renderPenHint(null); this._setPenCursor(null); this.exitPenTempSelect();
     }
     if (t === "node") this.mountNodeHandles(); else this.unmountNodeHandles();
+    this._syncNodeHandleToggle();
     if (t === "width") this._mountWidthHandles(); else this._unmountWidthHandles();
     if (t === "envelope") this._mountEnvelopeHandles(); else this._unmountEnvelopeHandles();
     if (t === "mesh") this._mountMeshHandles(); else this._unmountMeshHandles();

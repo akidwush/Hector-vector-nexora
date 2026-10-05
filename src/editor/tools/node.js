@@ -12,6 +12,7 @@ import {
 } from "../../hv/index.js";
 import { setStatus } from "../../app.js";
 import { snap45 } from "../snap.js";
+import { setUiIcon } from "../../ui/icon-system.js";
 
 export const nodeMixin = {
   // Node-edit focus: when objects are selected, only THEIR anchors (incl. group
@@ -46,7 +47,8 @@ export const nodeMixin = {
   },
   mountNodeHandles() {
     this.unmountNodeHandles();
-    const ov = this._overlayEl(); if (!ov || !this.stage) return;
+    this._nodeEls = new Map();
+    const ov = this._overlayEl(); if (!ov || !this.stage) { this._syncNodeHandleToggle(); return; }
     // A live shape whose `d` no longer matches its params was hand-edited in the node tool
     // (any edit path: drag / reshape / convert / delete) → freeze it to a plain freeform path.
     this.stage.querySelectorAll("path[data-hv-shape]").forEach((n) => { if (shapeWasEdited(n)) freezeShape(n); });
@@ -55,7 +57,7 @@ export const nodeMixin = {
     const pnodes = pathNodes(this.stage, accept);  // path anchors carry bezier direction handles
     const anchors = collectAnchors(this.stage, accept);   // rect/ellipse/line/polygon corner points
     const total = pnodes.length + anchors.length;
-    if (!total) return;
+    if (!total) { this._syncNodeHandleToggle(); return; }
     // Level-of-detail + viewport culling so a huge traced path (10k+ anchors) is
     // EDITABLE instead of refused: only anchors currently in view are candidates,
     // and when that's still more than the render budget we draw every Nth (stride).
@@ -87,7 +89,7 @@ export const nodeMixin = {
     // two layers so every anchor square sits above every direction-handle line/dot
     const handleLayer = document.createElementNS(SVG_NS, "g");
     const anchorLayer = document.createElementNS(SVG_NS, "g");
-    this._nodeEls = new Map();      // key → { nd, rect, refs, r } for group move + highlight
+    // key → { nd, rect, refs, r } for group move + highlight
     for (const nd of keepP) this._renderPathNode(handleLayer, anchorLayer, nd, r, hr);
     for (const a of keepA) {
       const c = document.createElementNS(SVG_NS, "circle");
@@ -98,11 +100,35 @@ export const nodeMixin = {
     }
     g.appendChild(handleLayer); g.appendChild(anchorLayer);
     ov.appendChild(g);
+    this._syncNodeHandleToggle();
   },
   _nodeKey(nd) { return nd.id + "#" + nd.k; },
   _refreshNodeSelHighlight() {
     if (!this._nodeEls) return;
     for (const [key, ent] of this._nodeEls) ent.rect.classList.toggle("selected", this._nodeSel.has(key));
+    this._syncNodeHandleToggle();
+  },
+  _syncNodeHandleToggle() {
+    const button = document.querySelector('#node-handle-link');
+    if (!button) return;
+    const key = this._nodeSel.size === 1 ? [...this._nodeSel][0] : null;
+    const nd = key && this._nodeEls?.get(key)?.nd;
+    const usable = this.tool === 'node' && !!nd?.inH && !!nd?.outH;
+    button.hidden = !usable;
+    document.querySelector('main.app')?.classList.toggle('has-node-point', usable);
+    if (!usable) return;
+    if (this._handleLink?.key !== key) this._handleLink = { key, linked: this._nodeIsSmooth(nd) };
+    const action = this._handleLink.linked ? 'Unlink Handles' : 'Link Handles';
+    button.title = action; button.setAttribute('aria-label', action);
+    button.setAttribute('aria-pressed', String(this._handleLink.linked));
+    setUiIcon(button, this._handleLink.linked ? 'unlink' : 'link');
+  },
+  toggleNodeHandleLink() {
+    this._syncNodeHandleToggle();
+    const button = document.querySelector('#node-handle-link');
+    if (!button || button.hidden || !this._handleLink) return;
+    this._handleLink.linked = !this._handleLink.linked;
+    this._syncNodeHandleToggle(); // behavior only: do not write path geometry or history
   },
   _nodeIsSmooth(nd) {
     if (!nd.inH || !nd.outH) return false;
@@ -350,8 +376,10 @@ export const nodeMixin = {
   _bindHandleDrag(dot, nd, side, refs) {
     dot.addEventListener("pointerdown", (e) => {
       e.stopPropagation(); e.preventDefault();
+      const key = this._nodeKey(nd);
+      if (!this._nodeSel.has(key)) { this._nodeSel = new Set([key]); this._refreshNodeSelHighlight(); }
       dot.setPointerCapture(e.pointerId); dot.classList.add("dragging"); this._handleDragging = true;
-      const smooth = this._nodeIsSmooth(nd);            // mirror the partner only if it started smooth
+      const smooth = this._handleLink?.key === key ? this._handleLink.linked : this._nodeIsSmooth(nd);
       let pushed = false;
       const sync = (line, h) => { dot.setAttribute("cx", nfmt(h.x)); dot.setAttribute("cy", nfmt(h.y)); line.setAttribute("x2", nfmt(h.x)); line.setAttribute("y2", nfmt(h.y)); };
       const move = (ev) => {

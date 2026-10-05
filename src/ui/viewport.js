@@ -209,14 +209,43 @@ export function measureFit(vp) {
   const { w: mw, h: mh } = mediaNaturalSize(media);
   if (mw <= 0 || mh <= 0 || fw <= 0 || fh <= 0) {
     vp.fitScale = 1;
-    resetViewport(vp);
     return;
   }
   // Fit fills the frame (with a small margin) — zooming IN for small artboards as
   // well as down for big ones, so "Fit" is distinct from "1:1" (actual size).
   vp.fitScale = Math.min(fw / mw, fh / mh) * 0.95;
   if (!Number.isFinite(vp.fitScale) || vp.fitScale <= 0) vp.fitScale = 1;
-  resetViewport(vp);
+}
+
+// The flex/grid shell may move the frame when a contextual row, dock or browser chrome
+// changes. The artwork is centred inside that frame; compensate its pan by the change
+// in frame centre so the same document coordinate stays at the same screen pixel.
+// A large physical viewport change instead keeps the document coordinate at the new
+// frame centre. Neither kind of resize changes the user's scale.
+export function observeViewportFrame(vp) {
+  const centre = () => {
+    const r = vp.el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2,
+      windowW: window.innerWidth, windowH: window.innerHeight };
+  };
+  let previous = centre();
+  const observer = new ResizeObserver(() => {
+    const current = centre();
+    const physical = Math.abs(current.windowW - previous.windowW) > previous.windowW * 0.15 ||
+      Math.abs(current.windowH - previous.windowH) > previous.windowH * 0.15;
+    if (vp.el.querySelector('.viewport-content')) {
+      measureFit(vp); // updates only the future Fit command
+      if (!physical && (current.x !== previous.x || current.y !== previous.y)) {
+        vp.x += previous.x - current.x;
+        vp.y += previous.y - current.y;
+        applyViewportState(vp);
+        if (vp === viewports.output) editor.onViewportChanged();
+      }
+    }
+    previous = current;
+  });
+  observer.observe(vp.el);
+  return observer;
 }
 
 export async function mountViewport(vp, kind, url, name, path) {
@@ -238,6 +267,7 @@ export async function mountViewport(vp, kind, url, name, path) {
   }
   await new Promise((resolve) => requestAnimationFrame(resolve));
   measureFit(vp);
+  resetViewport(vp); // a newly mounted document starts fitted exactly once
 }
 
 export function clearViewport(vp, text) {

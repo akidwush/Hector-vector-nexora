@@ -13,6 +13,8 @@
 const NS = "http://www.w3.org/2000/svg";
 
 const ICONS = {
+  link: '<path d="M10 13a5 5 0 0 0 7.1 0l2-2A5 5 0 0 0 12 3.9l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1 0l-2 2A5 5 0 0 0 12 20.1l1.1-1.1"/>',
+  unlink: '<path d="M9 15 7 17a4 4 0 0 1-5.7-5.7l2-2M15 9l2-2a4 4 0 0 1 5.7 5.7l-2 2M4 4l16 16"/>',
   pointer: '<path d="M5 3.5 18.5 12l-6.1 1.6L9.6 20 5 3.5Z"/><path d="m12.4 13.6 4 4"/>',
   nodes: '<path d="M4 17c3-8 7-10 16-10"/><circle cx="4" cy="17" r="2"/><circle cx="20" cy="7" r="2"/><circle cx="12" cy="10" r="2"/><path d="M6 17h4M14 10h4"/>',
   pen: '<path d="m12 3 5 5-7.5 11.5-5 1 1-5L17 4"/><path d="m9 15 3 3M4.5 20.5 8 17"/>',
@@ -141,6 +143,8 @@ function decorate(el, name) {
   el.dataset.hvIcon = name;
   el.replaceChildren(makeSvg(name));
 }
+
+export function setUiIcon(el, name) { decorate(el, name); }
 
 function decorateDynamic(root = document) {
   root.querySelectorAll?.('button.menu-rowbtn[title="Rename"], button.insp-iconbtn[title="Remove effect"]').forEach((b) => decorate(b, b.title === "Rename" ? "pencil" : "trash"));
