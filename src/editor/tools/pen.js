@@ -56,15 +56,21 @@ export const penMixin = {
     if (e.button !== 0) return;
     if (this._penTempSelect) return;   // Ctrl/Cmd held → Direct-Select mode owns the canvas (handle drags only)
     e.stopPropagation(); e.preventDefault();
+    const pointerId = e.pointerId;
     // Over an existing path with nothing in progress → auto add/delete an anchor
     // (Illustrator's pen behaviour) instead of starting a new path.
-    if (!this._pen && this._penHit) {
-      const hit = this._penHit; this._penHit = null; this._renderPenHint(null);
+    // Recompute from THIS press. Touch has no reliable hover, and on a coarse pointer only
+    // continuation is implicit — destructive add/delete actions remain explicit Node actions.
+    const directHit = !this._pen ? this._resolvePenHit(e.clientX, e.clientY, e.pointerType) : null;
+    if (!this._pen && directHit) {
+      const hit = directHit; this._penHit = null; this._renderPenHint(null);
       if (hit.mode === "anchor") this._deletePenAnchor(hit.el, hit.k);
       else if (hit.mode === "continue") this._continuePen(hit.el, hit.k);
       else this._insertPenAnchor(hit.el, hit.i, hit.t);
       return;
     }
+    const hadPen = !!this._pen;
+    const beforePoint = this._penPointState();
     const inv = () => this.stageCTM().inverse();
     let pt = new DOMPoint(e.clientX, e.clientY).matrixTransform(inv());
     let anchor;            // the anchor this press adjusts (a new one, or the first when closing)
@@ -104,6 +110,7 @@ export const penMixin = {
     this._redrawPen(); this._renderPenMarks();
     let lastP = { x: pt.x, y: pt.y };
     const move = (ev) => {
+      if (ev.pointerId !== pointerId) return;
       const p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(inv());
       if (this._spacePan && !closing) {                             // Space = reposition the anchor (handles follow)
         const ddx = p.x - lastP.x, ddy = p.y - lastP.y;
@@ -118,15 +125,25 @@ export const penMixin = {
       lastP = { x: p.x, y: p.y };
       this._redrawPen(); this._renderPenMarks();
     };
-    const up = () => {
+    const cleanup = (ev, cancelled) => {
+      if (ev.pointerId !== pointerId) return;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      if (cancelled) {
+        if (!hadPen) this._finishPen(false);
+        else if (beforePoint) this._applyPenPointState(beforePoint);
+        return;
+      }
       if (this._pen) this._pen.dragging = false;
       if (closing) this._finishPen(true);          // close completes on release, after any tangent drag
       else this._updateButtons();
     };
+    const up = (ev) => cleanup(ev, !!ev._hvNavigationCancel);
+    const cancel = (ev) => cleanup(ev, true);
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
   },
   _penHover(ev) {
     if (!this._pen || this._pen.dragging) return;
@@ -154,14 +171,20 @@ export const penMixin = {
     const w = document.querySelector(".stage-wrap"); if (w) w.classList.remove("pen-tempsel");
     this.unmountNodeHandles();
   },
-  _penIdleHover(ev) {
-    if (this.tool !== "pen" || this._pen || this._penTempSelect || !this.stage) return;
-    const m = this.stageCTM(); if (!m) { this._penHit = null; return; }
+  _resolvePenHit(clientX, clientY, pointerType = "mouse") {
+    if (this.tool !== "pen" || this._pen || this._penTempSelect || !this.stage) return null;
+    const m = this.stageCTM(); if (!m) return null;
     const k = Math.hypot(m.a, m.b) || 1;
-    const p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(m.inverse());
-    const hit = nearestOnPaths(this.stage, p.x, p.y, 6 / k);
-    // an open path's endpoint resumes drawing (continue) rather than deleting
+    const p = new DOMPoint(clientX, clientY).matrixTransform(m.inverse());
+    const hit = nearestOnPaths(this.stage, p.x, p.y, (pointerType === "touch" ? 12 : 6) / k);
     if (hit && hit.mode === "anchor" && !hit.closed && (hit.k === 0 || hit.k === hit.count - 1)) hit.mode = "continue";
+    // A phone cannot preview the desktop's +/- Pen cursor. Never hide a destructive
+    // add/delete operation behind a bare tap; continuation is the only implicit touch hit.
+    if (pointerType === "touch" && hit?.mode !== "continue") return null;
+    return hit;
+  },
+  _penIdleHover(ev) {
+    const hit = this._resolvePenHit(ev.clientX, ev.clientY, ev.pointerType);
     this._penHit = hit;
     this._renderPenHint(hit);
     this._setPenCursor(hit ? hit.mode : null);

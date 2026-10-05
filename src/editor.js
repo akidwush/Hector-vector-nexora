@@ -152,6 +152,86 @@ const editor = {
 
   get dirty() { return this.history.length > 0; },
 
+  // A first finger still belongs to the active tool. If a second finger arrives, the
+  // viewport promotes the interaction to navigation and asks us to roll that provisional
+  // edit back. Ordinary document tools get a private pre-touch state snapshot (not an Undo
+  // operation); live Pen/Curvature drafts keep their small point arrays + node attributes so
+  // construction can resume on the same element after navigation.
+  beginTouchEdit(pointerId) {
+    if (!this.stage || this._touchEdit) return;
+    const attrs = (node) => node ? [...node.attributes].map((a) => [a.name, a.value]) : [];
+    const points = (pts) => (pts || []).map((p) => ({
+      ...p,
+      in: p.in ? { ...p.in } : null,
+      out: p.out ? { ...p.out } : null,
+    }));
+    const draft = (value) => value ? {
+      node: value.node,
+      parent: value.node?.parentNode || null,
+      next: value.node?.nextSibling || null,
+      attrs: attrs(value.node),
+      data: { ...value, node: null, pts: points(value.pts),
+        pointUndo: value.pointUndo?.map((s) => ({ ...s, pts: points(s.pts) })) || [],
+        pointRedo: value.pointRedo?.map((s) => ({ ...s, pts: points(s.pts) })) || [] },
+    } : null;
+    this._touchEdit = {
+      pointerId,
+      state: !this._pen && !this._curv ? this._state() : null,
+      history: this.history.slice(), redo: this.redo.slice(), curLabel: this._curLabel,
+      coalescing: !!this._coalescing, coalesceState: this._coalesceState,
+      selection: [...this.selection], artboardSelected: this.artboardSelected, abSel: this._abSel,
+      nodeSel: [...this._nodeSel], handleLink: this._handleLink ? { ...this._handleLink } : null,
+      idSeq: this.idSeq, pen: draft(this._pen), curv: draft(this._curv),
+    };
+  },
+  discardTouchEdit(pointerId) {
+    if (this._touchEdit?.pointerId === pointerId) this._touchEdit = null;
+  },
+  rollbackTouchEdit(pointerId) {
+    const tx = this._touchEdit;
+    if (!tx || tx.pointerId !== pointerId) return false;
+    this._touchEdit = null;
+    if (this._penHoverBound) { window.removeEventListener("pointermove", this._penHoverBound); this._penHoverBound = null; }
+    if (this._curvHoverBound) { window.removeEventListener("pointermove", this._curvHoverBound); this._curvHoverBound = null; }
+
+    // Restore our private pre-touch snapshot, never document Undo. Active construction
+    // drafts are restored in place below so they keep their live element and point history.
+    const restoreState = tx.pen || tx.curv ? null : tx.state;
+    this._pen = null; this._curv = null;
+    if (restoreState) this._restore(restoreState);
+
+    const restoreDraft = (snap, kind) => {
+      if (!snap?.node) return null;
+      const node = snap.node;
+      if (!node.isConnected && snap.parent?.isConnected) snap.parent.insertBefore(node, snap.next?.isConnected ? snap.next : null);
+      for (const a of [...node.attributes]) node.removeAttribute(a.name);
+      for (const [name, value] of snap.attrs) node.setAttribute(name, value);
+      const value = { ...snap.data, node };
+      if (kind === "pen") {
+        this._penHoverBound = (ev) => this._penHover(ev);
+        window.addEventListener("pointermove", this._penHoverBound);
+      } else {
+        this._curvHoverBound = (ev) => this._curvHover(ev);
+        window.addEventListener("pointermove", this._curvHoverBound);
+      }
+      return value;
+    };
+    this._pen = restoreDraft(tx.pen, "pen");
+    this._curv = restoreDraft(tx.curv, "curv");
+
+    this.history = tx.history; this.redo = tx.redo; this._curLabel = tx.curLabel;
+    this._coalescing = tx.coalescing; this._coalesceState = tx.coalesceState;
+    this.idSeq = tx.idSeq;
+    this.selection = new Set(tx.selection.filter((id) => this.nodeById(id)));
+    this.artboardSelected = tx.artboardSelected; this._abSel = tx.abSel;
+    this._nodeSel = new Set(tx.nodeSel); this._handleLink = tx.handleLink;
+    this._renderSelection(); this._renderInspector(); this._renderLayers();
+    if (this._pen) { this._redrawPen(); this._renderPenMarks(); }
+    if (this._curv) { this._curvRedraw(); this._curvMarks(); }
+    this._renderHistory(); this._updateButtons();
+    return true;
+  },
+
   // ---------- lifecycle ----------
   sync() {
     const el = editorSvgEl();
@@ -160,6 +240,7 @@ const editor = {
     this.adopt(el);
   },
   adopt(svgEl) {
+    this._touchEdit = null;
     if (this._penHoverBound) { window.removeEventListener("pointermove", this._penHoverBound); this._penHoverBound = null; }
     if (this._curvHoverBound) { window.removeEventListener("pointermove", this._curvHoverBound); this._curvHoverBound = null; }
     // Cancel any coalescing edit (e.g. the colour panel's debounced commit) BEFORE
@@ -192,6 +273,7 @@ const editor = {
   // pen's window listener, cancel any coalescing edit, and empty the overlay. The old
   // stage element itself is GC'd once the viewport innerHTML is replaced.
   dispose() {
+    this._touchEdit = null;
     if (this._pen) this._finishPen(false);
     if (this._curv) this._curvFinish(false);
     if (this._penHoverBound) { window.removeEventListener("pointermove", this._penHoverBound); this._penHoverBound = null; }
@@ -514,6 +596,7 @@ const editor = {
     }
   },
   _beginMove(startEvent) {
+    const pointerId = startEvent.pointerId;
     let nodes = this._topSelection(this.selectedNodes()); if (!nodes.length) return;
     const inv = () => this.stageCTM().inverse();
     const start = new DOMPoint(startEvent.clientX, startEvent.clientY).matrixTransform(inv());
@@ -525,6 +608,7 @@ const editor = {
     const cand = this.smartGuides ? this._guideCandidates(nodes) : null;
     let pushed = false, duped = false;
     const move = (ev) => {
+      if (ev.pointerId !== pointerId) return;
       if (!pushed && Math.hypot(ev.clientX - startEvent.clientX, ev.clientY - startEvent.clientY) < 3) return;
       if (!pushed) {
         this.push(altDup ? "Duplicate" : "Move"); pushed = true;
@@ -552,14 +636,20 @@ const editor = {
       this._renderSelection();
       if (cand) { if (gx != null || gy != null) this._drawGuides(gx, gy); else this._clearGuides(); }
     };
-    const up = () => {
+    const up = (ev) => {
+      if (ev.pointerId !== pointerId) return;
+      const cancelled = ev.type === "pointercancel" || ev._hvNavigationCancel;
       window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
       this._clearGuides();
-      if (pushed) nodes.forEach((n, i) => { if (!flats[i]) this._consolidateTransform(n); });   // collapse translate·matrix → one matrix (no stacking)
-      if (duped) { this._renderLayers(); setStatus(`Duplicated ${this.selection.size} object${this.selection.size > 1 ? "s" : ""}.`, 1500); }
+      if (!cancelled) {
+        if (pushed) nodes.forEach((n, i) => { if (!flats[i]) this._consolidateTransform(n); }); // collapse translate·matrix → one matrix (no stacking)
+        if (duped) { this._renderLayers(); setStatus(`Duplicated ${this.selection.size} object${this.selection.size > 1 ? "s" : ""}.`, 1500); }
+      }
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   },
   _isTranslateOnly(n) { const a = (n.getAttribute("transform") || "").trim(); return a === "" || /^translate\([^)]*\)$/.test(a); },
   _consolidateTransform(n) {
@@ -574,6 +664,7 @@ const editor = {
   // is one undo step — beginCoalesce snapshots the pre-draw doc, commitCoalesce
   // commits it once the shape is large enough to keep (a bare click creates nothing).
   _beginDraw(startEvent) {
+    const pointerId = startEvent.pointerId;
     const tool = this.tool;
     const inv = () => this.stageCTM().inverse();
     const start = new DOMPoint(startEvent.clientX, startEvent.clientY).matrixTransform(inv());
@@ -585,16 +676,19 @@ const editor = {
     const a = { x: start.x, y: start.y };          // shape anchor (mutable so Space can reposition)
     let lastP = { x: start.x, y: start.y };
     const move = (ev) => {
+      if (ev.pointerId !== pointerId) return;
       const p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(inv());
       if (this._spacePan) { a.x += p.x - lastP.x; a.y += p.y - lastP.y; }   // Space = move the whole shape
       lastP = { x: p.x, y: p.y };
       sizeShape(tool, node, a, p, ev.shiftKey);
       moved = true;
     };
-    const up = () => {
+    const finish = (ev, cancelled) => {
+      if (ev.pointerId !== pointerId) return;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
-      if (!moved || !shapeMeaningful(tool, node)) { node.remove(); this.cancelCoalesce(); return; }
+      window.removeEventListener("pointercancel", cancel);
+      if (cancelled || !moved || !shapeMeaningful(tool, node)) { node.remove(); this.cancelCoalesce(); return; }
       const id = "n" + (++this.idSeq);
       node.setAttribute("data-hv-id", id);
       this.commitCoalesce(tool === "rect" ? "Rectangle" : tool === "ellipse" ? "Ellipse" : tool === "line" ? "Line" : "Shape");
@@ -602,8 +696,11 @@ const editor = {
       this._renderSelection(); this._renderInspector(); this._renderLayers();
       setStatus(`Added ${this.nodeName(node).toLowerCase()}.`, 1500);
     };
+    const up = (ev) => finish(ev, !!ev._hvNavigationCancel);
+    const cancel = (ev) => finish(ev, true);
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
   },
   // Pen tool: click to drop a corner anchor; click-drag to drop a smooth anchor
   // (the drag sets its bezier handle). Click the first anchor to close; Enter
@@ -661,7 +758,7 @@ const editor = {
       if (this.selection.size) return `${this.selection.size} selected. Drag to move · hold for more actions · ⇲ resize · ⟳ turn`;
       return "Select: tap a shape to pick it up. Drag empty space to sweep up several. Hold anything for its actions.";
     }
-    if (t === "node") return "Points: drag the dots to reshape. Drag the line between two dots to bend it.";
+    if (t === "node") return "Points: tap dots to select, then use Delete or Join below. Drag dots or segments to reshape.";
     if (t === "width") return "Width: drag sideways across a stroke to make it swell or pinch.";
     if (t === "envelope") return "Envelope: drag any grid dot to bend everything inside it.";
     if (t === "mesh") return "Mesh: drag any grid dot to warp the colour field. Colours live in the Mesh panel.";
@@ -669,7 +766,7 @@ const editor = {
     if (t === "scissors") return "Scissors: tap a path to snip it open.";
     if (t === "knife") return "Knife: drag right across a shape to slice it in two.";
     if (t === "eraser") return `Eraser (${this._eraserR}px): drag over a shape to rub it away.`;
-    if (t === "pen") return "Pen: tap to place corners, drag to curve. Tap the first point to close the shape.";
+    if (t === "pen") return "Pen: tap to place corners, drag to curve. Tap an open endpoint to continue a path.";
     if (t === "curvature") return "Curvature: tap to place points and they smooth themselves. Tap the first point to close.";
     if (t === "rect") return "Rectangle: drag on the canvas.";
     if (t === "ellipse") return "Ellipse: drag on the canvas.";

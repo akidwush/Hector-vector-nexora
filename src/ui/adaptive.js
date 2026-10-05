@@ -33,7 +33,11 @@ const ADAPTIVE_BARS = new Set(["arrange", "actions"]);
 // and the ranking loop below would silently mark all of them .act-off the moment adaptive mode goes
 // "full" (which touch/phone always is). Treated exactly like a pinned tile: reserved slot, always
 // shown, never reranked.
-const isMode = (k) => !!k && (k.startsWith("tool:") || k === "#node-handle-link");
+// Node-context controls are gated by nodeMixin's point-selection state rather than the object
+// action oracle. Keep them in their authored slots so adaptivity cannot hide the only mobile
+// route to Delete/Join (their own hidden/disabled attributes remain authoritative).
+const isMode = (k) => !!k && (k.startsWith("tool:") || k === "#node-handle-link"
+  || k === "#node-delete-point" || k === "#node-join-points");
 
 // How many actions a bar will show at once on a PHONE. With two overlapping shapes selected, fifteen
 // different actions are genuinely valid — ranking puts the right ones first, but fifteen 44px tiles
