@@ -46,6 +46,7 @@ export const curvatureMixin = {
   // double-click corner toggle so a simple click still flips smooth⇄corner.
   _curvDragPoint(i, downEv) {
     if (!this._curv) return;
+    const pointerId = downEv.pointerId;
     const inv = () => this.stageCTM().inverse();
     const start = new DOMPoint(downEv.clientX, downEv.clientY).matrixTransform(inv());
     const orig = { x: this._curv.pts[i].x, y: this._curv.pts[i].y };
@@ -53,6 +54,7 @@ export const curvatureMixin = {
     let moved = false;
     this._curv._drag = true;   // suspend the hover preview while dragging a point
     const move = (ev) => {
+      if (ev.pointerId !== pointerId) return;
       const p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(inv());
       if (!moved && Math.hypot(p.x - start.x, p.y - start.y) * k > 3) moved = true;
       if (!moved) return;
@@ -60,16 +62,25 @@ export const curvatureMixin = {
       this._curv.pts[i].y = orig.y + (p.y - start.y);
       this._curvRedraw(); this._curvMarks();
     };
-    const up = (ev) => {
+    const cleanup = (ev, cancelled) => {
+      if (ev.pointerId !== pointerId) return;
       window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
       if (this._curv) this._curv._drag = false;
+      if (cancelled) {
+        if (this._curv) { this._curv.pts[i].x = orig.x; this._curv.pts[i].y = orig.y; this._curvRedraw(); this._curvMarks(); }
+        this._curvLastClick = null;
+        return;
+      }
       if (moved) { this._curvLastClick = null; return; }
       const lc = this._curvLastClick;
       if (lc && lc.i === i && (ev.timeStamp - lc.t) < 350) {
         this._curv.pts[i].corner = !this._curv.pts[i].corner; this._curvRedraw(); this._curvMarks(); this._curvLastClick = null;
       } else this._curvLastClick = { t: ev.timeStamp, i };
     };
-    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up);
+    const up = (ev) => cleanup(ev, !!ev._hvNavigationCancel);
+    const cancel = (ev) => cleanup(ev, true);
+    window.addEventListener("pointermove", move); window.addEventListener("pointerup", up); window.addEventListener("pointercancel", cancel);
   },
   // Snap `to` onto the nearest 45° ray out of `from` (Shift-constrain).
   _constrain45(from, to) {

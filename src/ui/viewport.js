@@ -361,14 +361,15 @@ export function bindViewportZoom(vp) {
 // Multi-touch pinch-zoom + two-finger pan (mobile). ONE finger is left entirely to the
 // tools (draw / select / move) — it works already because the whole editor is pointer-event
 // based. The SECOND finger enters a navigation gesture: we intercept it at the CAPTURE phase
-// (so the stage tools never see it), end the first finger's in-progress op with a synthetic
-// zero-delta pointerup (its own up-handler tears down cleanly — _beginMove/_beginDraw commit
-// nothing on a sub-threshold delta), and drive zoom+pan from the two contact points. Desktop
+// (so the stage tools never see it), explicitly cancel + roll back the first finger's
+// provisional edit, and drive zoom+pan from the two contact points. A synthetic pointerup is
+// still used to tear down tool-local listeners/capture, but it is NOT the cancellation contract:
+// editor.rollbackTouchEdit restores the exact pre-first-touch state after that cleanup. Desktop
 // pans with Space-drag; touch has no Space, so two fingers are the pan. The content transform
 // is `translate(x,y) scale(s)` about the frame centre, so we zoom about the gesture centroid
 // by re-solving the translate that keeps the centroid's world point fixed (T' = (1-k)·u + k·T).
 export function bindViewportTouch(vp) {
-  const pts = new Map();              // active touch pointers over the frame: id -> {x, y}
+  const pts = new Map();              // active touch pointers over the frame: id -> {x, y, target}
   let g = null;                       // live gesture: {dist, c:{x,y}, scale, x, y, ox, oy}
   const twoPts = () => { const a = [...pts.values()]; return a.length >= 2 ? [a[0], a[1]] : null; };
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -378,28 +379,35 @@ export function bindViewportTouch(vp) {
     if (event.pointerType !== "touch") return;
     if (!vp.el.querySelector(".viewport-content")) return;
     const firstId = pts.size ? [...pts.keys()][0] : null;
-    pts.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    pts.set(event.pointerId, { x: event.clientX, y: event.clientY, target: event.target });
+    if (pts.size === 1) editor.beginTouchEdit?.(event.pointerId);
     if (pts.size !== 2) return;
     // Second finger → own the navigation gesture. Keep this pointer off the stage tools…
     event.preventDefault();
     event.stopPropagation();
     editor._touchGesture = true;
-    // …and cleanly end the first finger's op. A pointerup dispatched on document bubbles to
-    // window too, so both document- and window-level drag loops finalize and unbind.
-    if (firstId != null) {
-      const fp = pts.get(firstId);
-      try {
-        document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: firstId, clientX: fp.x, clientY: fp.y }));
-      } catch { /* older engines: the loop just rides through; harmless */ }
-    }
     const [a, b] = twoPts();
     const rect = vp.el.getBoundingClientRect();
     g = { dist: dist(a, b), c: mid(a, b), scale: vp.scale, x: vp.x, y: vp.y, ox: rect.left + rect.width / 2, oy: rect.top + rect.height / 2 };
+    // First clean up the exact target's local capture/listeners and all bubbling window
+    // listeners. The marker keeps our own `end` observer from deleting the contact that the
+    // navigation gesture still needs. Then restore geometry/history/selection atomically.
+    if (firstId != null) {
+      const fp = pts.get(firstId);
+      try {
+        const cancel = new PointerEvent("pointerup", { bubbles: true, pointerId: firstId,
+          pointerType: "touch", clientX: fp.x, clientY: fp.y });
+        Object.defineProperty(cancel, "_hvNavigationCancel", { value: true });
+        (fp.target?.isConnected ? fp.target : document).dispatchEvent(cancel);
+      } catch { /* older engines: rollback below is still authoritative */ }
+      editor.rollbackTouchEdit?.(firstId);
+    }
   }, true);
 
   vp.el.addEventListener("pointermove", (event) => {
     if (event.pointerType !== "touch" || !pts.has(event.pointerId)) return;
-    pts.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const old = pts.get(event.pointerId);
+    pts.set(event.pointerId, { x: event.clientX, y: event.clientY, target: old.target });
     if (!g) return;
     event.preventDefault();
     event.stopPropagation();
@@ -418,11 +426,17 @@ export function bindViewportTouch(vp) {
   }, true);
 
   const end = (event) => {
+    if (event._hvNavigationCancel) return;
     if (!pts.has(event.pointerId)) return;
+    const wasGesture = !!g || editor._touchGesture;
     pts.delete(event.pointerId);
     if (g && pts.size < 2) {
       g = null;
       if (vp === viewports.output) editor.onViewportChanged();   // re-cull node handles to the new view
+    }
+    if (!wasGesture) {
+      if (event.type === "pointercancel") editor.rollbackTouchEdit?.(event.pointerId);
+      else editor.discardTouchEdit?.(event.pointerId);
     }
     if (pts.size === 0) editor._touchGesture = false;
   };

@@ -24,6 +24,7 @@ export const marqueeMixin = {
   // endpoints fixed — minimal-norm solution); a straight segment translates (both
   // endpoints move). One undo step.
   _beginSegmentDrag(startEvent, el, i, t0) {
+    const pointerId = startEvent.pointerId;
     const pa = pathToAnchors(el);
     if (!pa.editable) { this._beginNodeMarquee(startEvent, startEvent.shiftKey); return; }
     const inv = () => this.stageCTM().inverse();
@@ -37,6 +38,7 @@ export const marqueeMixin = {
     const P2 = B.in ? { x: B.in.x, y: B.in.y } : { x: B.x, y: B.y };
     let pushed = false, moved = false;
     const move = (ev) => {
+      if (ev.pointerId !== pointerId) return;
       if (!moved && Math.hypot(ev.clientX - startEvent.clientX, ev.clientY - startEvent.clientY) < 3) return;
       moved = true;
       if (!pushed) { this.push("Reshape"); pushed = true; }
@@ -51,17 +53,24 @@ export const marqueeMixin = {
       }
       el.setAttribute("d", penAnchorsToD(pa.anchors, pa.subs));
     };
-    const up = () => {
+    const up = (ev) => {
+      if (ev.pointerId !== pointerId) return;
+      const cancelled = ev.type === "pointercancel" || ev._hvNavigationCancel;
       window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
-      this.mountNodeHandles();
-      if (pushed) this._renderInspector();   // reshaped a live shape → it froze → refresh the panel
+      window.removeEventListener("pointercancel", up);
+      if (!cancelled) {
+        this.mountNodeHandles();
+        if (pushed) this._renderInspector();   // reshaped a live shape → it froze → refresh the panel
+      }
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   },
   // Node tool: rubber-band box over the canvas selects all enclosed path anchors
   // (Shift adds to the current anchor selection). A plain click clears.
   _beginNodeMarquee(startEvent, additive) {
+    const pointerId = startEvent.pointerId;
     const ov = this._overlayEl(); if (!ov) return;
     const inv = () => this.stageCTM().inverse();
     const start = new DOMPoint(startEvent.clientX, startEvent.clientY).matrixTransform(inv());
@@ -70,6 +79,7 @@ export const marqueeMixin = {
     ov.appendChild(box);
     let moved = false;
     const move = (ev) => {
+      if (ev.pointerId !== pointerId) return;
       if (!moved && Math.hypot(ev.clientX - startEvent.clientX, ev.clientY - startEvent.clientY) < 3) return;
       moved = true;
       const p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(inv());
@@ -79,16 +89,23 @@ export const marqueeMixin = {
       for (const nd of pathNodes(this.stage, this._nodeFocusAccept())) if (nd.x >= x0 && nd.x <= x1 && nd.y >= y0 && nd.y <= y1) sel.add(this._nodeKey(nd));
       this._nodeSel = sel; this._refreshNodeSelHighlight();
     };
-    const up = () => {
+    const up = (ev) => {
+      if (ev.pointerId !== pointerId) return;
+      const cancelled = ev.type === "pointercancel" || ev._hvNavigationCancel;
       window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
       box.remove();
-      if (!moved && !additive) this._nodeSel = new Set();   // plain click on empty → clear
-      this.mountNodeHandles();
+      if (!cancelled) {
+        if (!moved && !additive) this._nodeSel = new Set(); // plain click on empty → clear
+        this.mountNodeHandles();
+      }
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   },
   _beginMarquee(startEvent, lasso) {
+    const pointerId = startEvent.pointerId;
     if (!this.stage) return;
     const ov = this._overlayEl(); if (!ov) return;
     const inv = () => this.stageCTM().inverse();
@@ -104,14 +121,19 @@ export const marqueeMixin = {
       shape.setAttribute("width", nfmt(Math.abs(p.x - start.x))); shape.setAttribute("height", nfmt(Math.abs(p.y - start.y)));
     };
     const move = (ev) => {
+      if (ev.pointerId !== pointerId) return;
       const p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(inv());
       if (Math.abs(p.x - start.x) > 1 || Math.abs(p.y - start.y) > 1) moved = true;
       if (lasso) { pts.push({ x: p.x, y: p.y }); shape.setAttribute("points", pts.map((q) => nfmt(q.x) + "," + nfmt(q.y)).join(" ")); }
       else drawRect(p);
     };
     const up = (ev) => {
+      if (ev.pointerId !== pointerId) return;
+      const cancelled = ev.type === "pointercancel" || ev._hvNavigationCancel;
       window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
       shape.remove();
+      if (cancelled) return;
       if (!moved) {   // a plain click — fall back to single-pick / clear, like the select tool
         let hit = startEvent.target.closest && startEvent.target.closest("[data-hv-id]");
         if (hit && hit.getAttribute("data-hv-locked") === "1") hit = null;
@@ -141,6 +163,7 @@ export const marqueeMixin = {
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   },
   _selectableNodes() {
     // In isolation, marquee only reaches the isolated group's children (Epic I).

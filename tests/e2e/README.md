@@ -27,6 +27,16 @@ python3 -m venv .venv-e2e          # from the repo root
 .venv-e2e/bin/python tests/e2e/editor_e2e.py http://localhost:8080
 ```
 
+The focused phone regression for two-finger cancellation, Pen continuation, and
+Node point actions uses the same running app and a Node Playwright install:
+
+```bash
+node tests/e2e/mobile_pen_actions_e2e.mjs http://localhost:2002
+```
+
+It renders touch/mobile contexts at 360, 390, 412, and 430 CSS px and exercises
+real editor geometry/history in Chromium; it is not a source-text assertion.
+
 Exit code is non-zero if any check fails; each check prints PASS/FAIL with detail.
 
 ## What it checks

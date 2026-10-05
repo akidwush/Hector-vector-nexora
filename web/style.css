@@ -636,10 +636,15 @@ button:disabled {
 .stage-toolbar > * { flex: 0 0 auto; }
 .stage-toolbar .node-handle-toggle { display: none; }
 @media (pointer: coarse) and (max-width: 980px) {
-  .app.has-node-point .phone-ctxrow > .stage-toolbar,
-  .app.has-node-point .mobilebar > .stage-toolbar.on-topbar { display: flex; }
-  .app.has-node-point .phone-ctxrow > .stage-toolbar { min-height: 52px; }
+  .app.has-node-selection .phone-ctxrow > .stage-toolbar,
+  .app.has-node-selection .mobilebar > .stage-toolbar.on-topbar { display: flex; }
+  .app.has-node-selection .phone-ctxrow > .stage-toolbar { min-height: 52px; }
   .app.has-node-point .stage-toolbar .node-handle-toggle:not([hidden]) {
+    display: grid;
+    width: 44px; height: 44px; min-width: 44px; flex: 0 0 44px;
+    touch-action: manipulation;
+  }
+  .app.has-node-selection .stage-toolbar .node-point-action:not([hidden]) {
     display: grid;
     width: 44px; height: 44px; min-width: 44px; flex: 0 0 44px;
     touch-action: manipulation;
@@ -2460,7 +2465,8 @@ text.hv-text-editing { visibility: hidden; }
 /* Freeze the track. The bars' EXTENT changing is the real jank — it re-measures the grid and the
    canvas lurches. Give them a floor sized to the empty bar so the track never moves. */
 .editor-grid > .actionbar { min-height: 34px; }
-.app.has-selection .stage-wrap > .stage-toolbar { min-height: 34px; }
+.app.has-selection .stage-wrap > .stage-toolbar,
+.app.has-node-selection .stage-wrap > .stage-toolbar { min-height: 34px; }
 /* ...but while you're customizing you must be able to SEE what you switched off, or you could never
    switch it back on from the bar itself. Show it, ghosted. */
 .app.editor.customizing .tool-button.layout-hidden { display: grid !important; opacity: 0.32; outline: 1px dashed var(--muted); outline-offset: -1px; }
@@ -2674,7 +2680,8 @@ text.hv-text-editing { visibility: hidden; }
      selection — arrange, rename, duplicate and, crucially, DELETE, which this stylesheet used to
      display:none outright, leaving no way at all to delete an object on a phone. */
   .phone-ctxrow > .stage-toolbar { display: none; }
-  .app.has-selection .phone-ctxrow > .stage-toolbar {
+  .app.has-selection .phone-ctxrow > .stage-toolbar,
+  .app.has-node-selection .phone-ctxrow > .stage-toolbar {
     display: flex;
     /* nowrap or it stacks into two rows and eats ~200px of canvas — it must scroll, not wrap.
        flex-start is load-bearing too: the desktop rule centres this bar, and centred flex content
@@ -2686,9 +2693,12 @@ text.hv-text-editing { visibility: hidden; }
     overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
   }
-  .app.has-selection .phone-ctxrow > .stage-toolbar::-webkit-scrollbar { display: none; }
-  .app.has-selection .phone-ctxrow > .stage-toolbar .tool-button { width: 44px; height: 44px; font-size: 19px; flex: 0 0 auto; }
-  .app.has-selection .phone-ctxrow > .stage-toolbar .tool-vsep { width: 1px; height: 26px; margin: 0 3px; align-self: center; flex: 0 0 auto; }
+  .app.has-selection .phone-ctxrow > .stage-toolbar::-webkit-scrollbar,
+  .app.has-node-selection .phone-ctxrow > .stage-toolbar::-webkit-scrollbar { display: none; }
+  .app.has-selection .phone-ctxrow > .stage-toolbar .tool-button,
+  .app.has-node-selection .phone-ctxrow > .stage-toolbar .tool-button { width: 44px; height: 44px; font-size: 19px; flex: 0 0 auto; }
+  .app.has-selection .phone-ctxrow > .stage-toolbar .tool-vsep,
+  .app.has-node-selection .phone-ctxrow > .stage-toolbar .tool-vsep { width: 1px; height: 26px; margin: 0 3px; align-self: center; flex: 0 0 auto; }
 
   /* --- the always-on quick bar: undo/redo + canvas control, directly under the topbar --- */
   .mobilebar {
@@ -2963,7 +2973,8 @@ text.hv-text-editing { visibility: hidden; }
     padding: 0; margin: 0; border: 0;
     overflow-x: auto; overflow-y: hidden; scrollbar-width: none; touch-action: pan-x;
   }
-  .app.has-selection .mobilebar > .stage-toolbar.on-topbar { display: flex; align-items: center; }
+  .app.has-selection .mobilebar > .stage-toolbar.on-topbar,
+  .app.has-node-selection .mobilebar > .stage-toolbar.on-topbar { display: flex; align-items: center; }
   .mobilebar > .stage-toolbar.on-topbar::-webkit-scrollbar { display: none; }
   .mobilebar > .stage-toolbar.on-topbar .tool-button { width: 40px; height: 40px; font-size: 17px; flex: 0 0 auto; }
   .mobilebar > .stage-toolbar.on-topbar .tool-vsep { width: 1px; height: 24px; margin: 0 2px; align-self: center; flex: 0 0 auto; }
@@ -3244,21 +3255,31 @@ text.hv-text-editing { visibility: hidden; }
   }
 
   /* Context actions remain selection-only, but become a compact one-row command strip. */
-  .app.has-selection .phone-ctxrow > .stage-toolbar {
+  .app.has-selection .phone-ctxrow > .stage-toolbar,
+  .app.has-node-selection .phone-ctxrow > .stage-toolbar {
     min-height: var(--ctxrow-h);
     gap: 5px;
     padding: 4px 8px;
     border-color: var(--hair-2);
     background: var(--panel);
   }
-  .app.has-selection .phone-ctxrow > .stage-toolbar .tool-button {
+  .app.has-selection .phone-ctxrow > .stage-toolbar .tool-button,
+  .app.has-node-selection .phone-ctxrow > .stage-toolbar .tool-button {
     width: 42px;
     height: 42px;
     min-width: 42px;
     flex: 0 0 42px;
     font-size: 0;
   }
-  .app.has-selection .phone-ctxrow > .stage-toolbar .tool-button .hv-ui-icon {
+  .app.has-node-selection .phone-ctxrow > .stage-toolbar .node-point-action:not([hidden]) {
+    /* Node actions are validated outside the object-action oracle. The adaptive bar may
+       still carry a stale .act-off from the preceding no-point state, so the explicit
+       point-selection contract wins until hidden is set again by nodeMixin. */
+    display: grid !important;
+    width: 44px; height: 44px; min-width: 44px; flex-basis: 44px;
+  }
+  .app.has-selection .phone-ctxrow > .stage-toolbar .tool-button .hv-ui-icon,
+  .app.has-node-selection .phone-ctxrow > .stage-toolbar .tool-button .hv-ui-icon {
     width: 19px;
     height: 19px;
   }

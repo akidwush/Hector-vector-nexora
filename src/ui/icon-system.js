@@ -116,6 +116,7 @@ const STATIC = [
   ['#layer-front', 'front'], ['#layer-forward', 'forward'], ['#layer-backward', 'backward'], ['#layer-back', 'back'],
   ['#layer-group', 'group'], ['#layer-ungroup', 'ungroup'], ['#act-clip', 'clip'], ['#act-duplicate', 'duplicate'],
   ['#layer-rename', 'pencil'], ['#layer-delete', 'trash'],
+  ['#node-join-points', 'link'], ['#node-delete-point', 'trash'],
   ['[data-action="zoom-out"]', 'zoomOut'], ['[data-action="fit"]', 'fit'], ['[data-action="zoom-in"]', 'zoomIn'],
   ['#vp-selectall', 'selectAll'], ['#vp-rulers', 'ruler'], ['#vp-guides', 'guides'],
   ['#act-scale', 'scale'], ['#act-rotate', 'rotate'], ['#act-rotate-cw', 'rotate'], ['#act-rotate-ccw', 'rotateCcw'],

@@ -110,18 +110,51 @@ export const nodeMixin = {
   },
   _syncNodeHandleToggle() {
     const button = document.querySelector('#node-handle-link');
-    if (!button) return;
     const key = this._nodeSel.size === 1 ? [...this._nodeSel][0] : null;
     const nd = key && this._nodeEls?.get(key)?.nd;
     const usable = this.tool === 'node' && !!nd?.inH && !!nd?.outH;
-    button.hidden = !usable;
+    if (button) button.hidden = !usable;
     document.querySelector('main.app')?.classList.toggle('has-node-point', usable);
-    if (!usable) return;
-    if (this._handleLink?.key !== key) this._handleLink = { key, linked: this._nodeIsSmooth(nd) };
-    const action = this._handleLink.linked ? 'Unlink Handles' : 'Link Handles';
-    button.title = action; button.setAttribute('aria-label', action);
-    button.setAttribute('aria-pressed', String(this._handleLink.linked));
-    setUiIcon(button, this._handleLink.linked ? 'unlink' : 'link');
+    if (usable && button) {
+      if (this._handleLink?.key !== key) this._handleLink = { key, linked: this._nodeIsSmooth(nd) };
+      const action = this._handleLink.linked ? 'Unlink Handles' : 'Link Handles';
+      button.title = action; button.setAttribute('aria-label', action);
+      button.setAttribute('aria-pressed', String(this._handleLink.linked));
+      setUiIcon(button, this._handleLink.linked ? 'unlink' : 'link');
+    }
+    this._syncNodeActions();
+  },
+  _nodeJoinAvailable() {
+    if (this.tool !== "node" || this._nodeSel.size !== 2) return { valid: false, label: "Join (select 2 endpoints)" };
+    const parse = (key) => { const i = key.lastIndexOf("#"); return { id: key.slice(0, i), k: +key.slice(i + 1) }; };
+    const [a, b] = [...this._nodeSel].map(parse);
+    const elA = this.nodeById(a.id), elB = this.nodeById(b.id);
+    if (!elA || !elB) return { valid: false, label: "Join (invalid endpoints)" };
+    const pa = pathToAnchors(elA), pb = a.id === b.id ? pa : pathToAnchors(elB);
+    if (!pa.editable || !pb.editable || pa.closed || pb.closed || pa.subs.length > 1 || pb.subs.length > 1) {
+      return { valid: false, label: "Join (open paths only)" };
+    }
+    const endA = a.k === 0 || a.k === pa.anchors.length - 1;
+    const endB = b.k === 0 || b.k === pb.anchors.length - 1;
+    if (!endA || !endB) return { valid: false, label: "Join (select endpoints)" };
+    return { valid: true, label: a.id === b.id ? "Close path" : "Join paths" };
+  },
+  _syncNodeActions() {
+    const app = document.querySelector('main.app');
+    const del = document.querySelector('#node-delete-point');
+    const join = document.querySelector('#node-join-points');
+    const active = this.tool === 'node' && this._nodeSel.size > 0;
+    app?.classList.toggle('has-node-selection', active);
+    if (del) {
+      const label = this._nodeSel.size > 1 ? `Delete ${this._nodeSel.size} points` : 'Delete point';
+      del.hidden = !active; del.disabled = !active;
+      del.title = label; del.setAttribute('aria-label', label);
+    }
+    if (join) {
+      const state = this._nodeJoinAvailable();
+      join.hidden = !active; join.disabled = !state.valid;
+      join.title = state.label; join.setAttribute('aria-label', state.label);
+    }
   },
   toggleNodeHandleLink() {
     this._syncNodeHandleToggle();
@@ -194,6 +227,7 @@ export const nodeMixin = {
   _bindAnchorDrag(c, nd, r, refs) {
     c.addEventListener("pointerdown", (e) => {
       e.stopPropagation(); e.preventDefault();
+      const pointerId = e.pointerId;
       c.setPointerCapture(e.pointerId); c.classList.add("dragging"); this._handleDragging = true;
       const key = this._nodeKey(nd), alt = e.altKey;
       // selection: plain click = this anchor only; Shift = add for the (possible) drag,
@@ -212,6 +246,7 @@ export const nodeMixin = {
         const cand = (!alt && this.smartGuides) ? this._guideCandidates([nd.el]) : null;
       let pushed = false, moved = false, conv = null;
       const move = (ev) => {
+        if (ev.pointerId !== pointerId) return;
         if (!moved && Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) < 3) return;   // ignore click jitter
         moved = true;
         const m = this.stageCTM(); if (!m) return;
@@ -234,18 +269,23 @@ export const nodeMixin = {
         for (const st of starts) { st.ent.nd.moveTo(st.x + dx, st.y + dy); this._syncNodeEls(st.ent, st.x + dx, st.y + dy); }
         if (cand) { if (gx != null || gy != null) this._drawGuides(gx, gy); else this._clearGuides(); }
       };
-      const up = () => {
-        try { c.releasePointerCapture(e.pointerId); } catch {}
+      const up = (ev) => {
+        if (ev.pointerId !== pointerId) return;
+        const cancelled = ev.type === "pointercancel" || ev._hvNavigationCancel;
+        try { c.releasePointerCapture(pointerId); } catch {}
         c.classList.remove("dragging"); this._handleDragging = false;
-        c.removeEventListener("pointermove", move); c.removeEventListener("pointerup", up);
+        c.removeEventListener("pointermove", move); c.removeEventListener("pointerup", up); c.removeEventListener("pointercancel", up);
         this._clearGuides();
-        if (alt && !moved) this._altClickAnchor(nd);                       // Alt-click (no drag) → smooth→corner
-        else if (!alt && e.shiftKey && !moved && wasSel) this._nodeSel.delete(key);   // Shift-click (no drag) → deselect
-        this.mountNodeHandles();
-        if (moved || alt) this._renderInspector();   // a hand-edited live shape just froze → refresh the panel (Shape → freeform)
+        if (!cancelled) {
+          if (alt && !moved) this._altClickAnchor(nd);                       // Alt-click (no drag) → smooth→corner
+          else if (!alt && e.shiftKey && !moved && wasSel) this._nodeSel.delete(key); // Shift-click (no drag) → deselect
+          this.mountNodeHandles();
+          if (moved || alt) this._renderInspector();   // a hand-edited live shape just froze → refresh the panel (Shape → freeform)
+        }
       };
       c.addEventListener("pointermove", move);
       c.addEventListener("pointerup", up);
+      c.addEventListener("pointercancel", up);
     });
   },
   // Delete the currently-selected path anchors, re-stitching each path (one undo step).
@@ -376,6 +416,7 @@ export const nodeMixin = {
   _bindHandleDrag(dot, nd, side, refs) {
     dot.addEventListener("pointerdown", (e) => {
       e.stopPropagation(); e.preventDefault();
+      const pointerId = e.pointerId;
       const key = this._nodeKey(nd);
       if (!this._nodeSel.has(key)) { this._nodeSel = new Set([key]); this._refreshNodeSelHighlight(); }
       dot.setPointerCapture(e.pointerId); dot.classList.add("dragging"); this._handleDragging = true;
@@ -383,6 +424,7 @@ export const nodeMixin = {
       let pushed = false;
       const sync = (line, h) => { dot.setAttribute("cx", nfmt(h.x)); dot.setAttribute("cy", nfmt(h.y)); line.setAttribute("x2", nfmt(h.x)); line.setAttribute("y2", nfmt(h.y)); };
       const move = (ev) => {
+        if (ev.pointerId !== pointerId) return;
         const m = this.stageCTM(); if (!m) return;
         if (!pushed) { this.push("Reshape"); pushed = true; }
         let p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(m.inverse());
@@ -397,38 +439,50 @@ export const nodeMixin = {
           if (oppDot && oppH) { oppDot.setAttribute("cx", nfmt(oppH.x)); oppDot.setAttribute("cy", nfmt(oppH.y)); oppLine.setAttribute("x2", nfmt(oppH.x)); oppLine.setAttribute("y2", nfmt(oppH.y)); }
         }
       };
-      const up = () => {
-        try { dot.releasePointerCapture(e.pointerId); } catch {}
+      const up = (ev) => {
+        if (ev.pointerId !== pointerId) return;
+        const cancelled = ev.type === "pointercancel" || ev._hvNavigationCancel;
+        try { dot.releasePointerCapture(pointerId); } catch {}
         dot.classList.remove("dragging"); this._handleDragging = false;
-        dot.removeEventListener("pointermove", move); dot.removeEventListener("pointerup", up);
-        this.mountNodeHandles();
-        if (pushed) this._renderInspector();   // edited a live shape → it froze → refresh the panel
+        dot.removeEventListener("pointermove", move); dot.removeEventListener("pointerup", up); dot.removeEventListener("pointercancel", up);
+        if (!cancelled) {
+          this.mountNodeHandles();
+          if (pushed) this._renderInspector();   // edited a live shape → it froze → refresh the panel
+        }
       };
       dot.addEventListener("pointermove", move);
       dot.addEventListener("pointerup", up);
+      dot.addEventListener("pointercancel", up);
     });
   },
   _bindNodeHandle(c, a) {
     c.addEventListener("pointerdown", (e) => {
       e.stopPropagation(); e.preventDefault();
+      const pointerId = e.pointerId;
       c.setPointerCapture(e.pointerId); c.classList.add("dragging"); this._handleDragging = true;
       let pushed = false;
       const move = (ev) => {
+        if (ev.pointerId !== pointerId) return;
         const m = this.stageCTM(); if (!m) return;
         if (!pushed) { this.push("Move point"); pushed = true; }
         const p = new DOMPoint(ev.clientX, ev.clientY).matrixTransform(m.inverse());
         c.setAttribute("cx", p.x); c.setAttribute("cy", p.y);
         a.set(p.x, p.y);
       };
-      const up = () => {
-        try { c.releasePointerCapture(e.pointerId); } catch {}
+      const up = (ev) => {
+        if (ev.pointerId !== pointerId) return;
+        const cancelled = ev.type === "pointercancel" || ev._hvNavigationCancel;
+        try { c.releasePointerCapture(pointerId); } catch {}
         c.classList.remove("dragging"); this._handleDragging = false;
-        c.removeEventListener("pointermove", move); c.removeEventListener("pointerup", up);
-        this.mountNodeHandles();
-        if (pushed) this._renderInspector();   // edited a live shape → it froze → refresh the panel
+        c.removeEventListener("pointermove", move); c.removeEventListener("pointerup", up); c.removeEventListener("pointercancel", up);
+        if (!cancelled) {
+          this.mountNodeHandles();
+          if (pushed) this._renderInspector();   // edited a live shape → it froze → refresh the panel
+        }
       };
       c.addEventListener("pointermove", move);
       c.addEventListener("pointerup", up);
+      c.addEventListener("pointercancel", up);
     });
   },
 };

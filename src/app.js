@@ -619,6 +619,8 @@ configureExport({
 // ---------- editor wiring: tools, header buttons, rail, keyboard ----------
 document.querySelectorAll(".tool-button").forEach((b) => b.addEventListener("click", () => editor.setTool(b.dataset.tool)));
 document.querySelector('#node-handle-link')?.addEventListener('click', () => editor.toggleNodeHandleLink());
+document.querySelector('#node-join-points')?.addEventListener('click', () => editor.joinNodes());
+document.querySelector('#node-delete-point')?.addEventListener('click', () => editor.deleteNodeSelection());
 // ---------- fill (primary) / stroke (secondary) colour swatches ----------
 {
   const fillSw = document.querySelector("#swatch-fill");
