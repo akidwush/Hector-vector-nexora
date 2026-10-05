@@ -11,7 +11,7 @@ import { sectionTitle, fieldRow, makeNumberRaw } from "./widgets.js";
 import { serializeForSave, openExportModal } from "./export.js";
 import { hideContextMenu } from "./menus.js";
 import { renderGalleryGrid, downloadBlob, loadRasterToCanvas } from "./gallery.js";
-import { viewports, applyBgMode, measureFit } from "./viewport.js";
+import { viewports, applyBgMode, measureFit, resetViewport } from "./viewport.js";
 import {
   selectedOutput, outputs, workItems, projects,
   setSelectedName, setSelectedOutput, setManualOutputName, setProjects,
@@ -48,7 +48,7 @@ export function mountStageFromText(text, name) {
   // referenced the OLD document (e.g. code/tests reading editor.stage right after a mount saw a
   // stale stage — a lingering raster from the previous doc). Only measureFit needs layout → rAF.
   editor.sync();
-  requestAnimationFrame(() => measureFit(vp));
+  requestAnimationFrame(() => { measureFit(vp); resetViewport(vp); }); // new document only
 }
 
 // Mount a fresh white artboard with no save target (Save → Save-As).
