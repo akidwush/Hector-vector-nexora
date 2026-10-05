@@ -25,6 +25,9 @@ jobs:
             cp "$f" "$f.mjs" && node --check "$f.mjs" && rm "$f.mjs"
           done
 
+      - name: Mobile viewport and Bézier handle behavior
+        run: node tests/mobile-behavior.mjs
+
       # JS twin of the Python import guard: no-undef catches an identifier used but neither
       # imported, declared, nor a browser global — the missing-import ReferenceError class the
       # app.js/editor.js splits keep introducing (docks.js's showContextMenu + cycleBg). node
