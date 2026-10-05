@@ -33,7 +33,7 @@ const ADAPTIVE_BARS = new Set(["arrange", "actions"]);
 // and the ranking loop below would silently mark all of them .act-off the moment adaptive mode goes
 // "full" (which touch/phone always is). Treated exactly like a pinned tile: reserved slot, always
 // shown, never reranked.
-const isMode = (k) => !!k && k.startsWith("tool:");
+const isMode = (k) => !!k && (k.startsWith("tool:") || k === "#node-handle-link");
 
 // How many actions a bar will show at once on a PHONE. With two overlapping shapes selected, fifteen
 // different actions are genuinely valid — ranking puts the right ones first, but fifteen 44px tiles

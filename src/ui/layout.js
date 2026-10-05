@@ -26,7 +26,7 @@ export function createLayoutCustomize({ appEl, editor, setStatus, floatingInput,
     { name: "hdr-layers",  sel: ".rail-section.layers .panel-actions",  tail: null },
   ];
   const barOf = (b) => b.el || document.querySelector(b.sel);   // bars are sel- OR element-based (panel headers)
-  const isTile = (el) => !!(el && el.classList && el.classList.contains("tool-button") && !el.classList.contains("panel-x"));   // the × isn't a movable tile
+  const isTile = (el) => !!(el && el.classList && el.classList.contains("tool-button") && !el.classList.contains("panel-x") && !el.classList.contains("node-handle-toggle")); // contextual state isn't a saved layout tile
   const isSep = (el) => !!(el && el.classList && (el.classList.contains("tool-sep") || el.classList.contains("tool-vsep") || el.classList.contains("vp-sep")));
   const tileKey = (b) => b.id ? "#" + b.id : b.dataset.tool ? "tool:" + b.dataset.tool : (b.dataset.vp && b.dataset.action) ? "vp:" + b.dataset.action : "t:" + (b.textContent || "").trim();
   const slotKey = (el) => isSep(el) ? SEP : tileKey(el);
